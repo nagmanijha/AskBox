@@ -2,25 +2,8 @@
 import { WebSocket } from 'ws';
 import { logger } from '../config/logger';
 import { v4 as uuidv4 } from 'uuid';
+import { ConversationTurn } from '../shared/types';
 
-/**
- * Phase 1 — Checkpoint 1: Call Routing & WebSocket Initialization
- *
- * Manages the full lifecycle of a single voice call session.
- * Each incoming ACS WebSocket connection creates one CallSession.
- *
- * KEY DESIGN DECISIONS:
- * - AbortController per "turn" so barge-in can cancel LLM+TTS mid-stream
- * - Conversation history kept in-memory (synced to Redis for persistence)
- * - Language state is mutable — updated by STT Language ID on every utterance
- */
-
-export interface ConversationTurn {
-    role: 'user' | 'assistant';
-    content: string;
-    language: string;
-    timestamp: number;
-}
 
 export interface SessionMetrics {
     sessionStartTime: number;

@@ -3,7 +3,7 @@ import { logger } from '../config/logger';
 import { config } from '../config';
 import { redisService } from './redisClient';
 import { searchService } from './searchClient';
-import type { ConversationTurn } from './callSession';
+import { ConversationTurn } from '../shared/types';
 
 /**
  * Phase 2 — Checkpoint 4 & 5: RAG Retrieval & Prompt Assembly
@@ -183,16 +183,33 @@ class RAGService {
         const lower = query.toLowerCase();
 
         const mockKnowledge: Record<string, string> = {
+            // Science
             'photosynthesis': 'Photosynthesis is the process by which green plants use sunlight, water, and carbon dioxide to produce oxygen and energy in the form of sugar. It occurs in the chloroplasts of plant cells. The equation is: 6CO2 + 6H2O + light energy → C6H12O6 + 6O2.',
             'newton': 'Newton\'s Three Laws of Motion: 1) An object at rest stays at rest unless acted upon by a force. 2) Force = Mass × Acceleration (F=ma). 3) For every action, there is an equal and opposite reaction.',
-            'solar': 'The solar system has 8 planets: Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and Neptune. Pluto was reclassified as a dwarf planet in 2006.',
+            'solar': 'The solar system has 8 planets: Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and Neptune. Pluto was reclassified as a dwarf planet in 2006. The Sun is a star at the center.',
             'water cycle': 'The water cycle has 4 stages: Evaporation (water turns to vapor), Condensation (vapor forms clouds), Precipitation (rain/snow falls), Collection (water gathers in rivers/oceans).',
-            'pradhan mantri': 'Pradhan Mantri Awas Yojana (PMAY) provides affordable housing. Eligibility: Annual income below ₹18 lakh for urban, ₹3 lakh for rural. Benefits: Interest subsidy of 3-6.5% on home loans up to ₹6 lakh.',
-            'periodic table': 'The periodic table organizes 118 elements by atomic number. Rows are called periods, columns are groups. Metals are on the left, nonmetals on the right. Noble gases (Group 18) are the most stable.',
-            'democracy': 'Democracy is a system of government where citizens exercise power by voting. India is the world\'s largest democracy with a parliamentary system. Key features: universal adult suffrage, fundamental rights, independent judiciary.',
-            'electricity': 'Electricity is the flow of electrons through a conductor. Key concepts: Voltage (V) = pressure, Current (I) = flow rate, Resistance (R) = opposition. Ohm\'s Law: V = I × R.',
             'cell division': 'Cell division has two types: Mitosis (produces 2 identical cells for growth/repair) and Meiosis (produces 4 different cells for reproduction). Stages of mitosis: Prophase, Metaphase, Anaphase, Telophase.',
             'climate change': 'Climate change is the long-term shift in global temperatures caused by greenhouse gas emissions. Main causes: burning fossil fuels, deforestation. Effects: rising sea levels, extreme weather, crop failure.',
+            'electricity': 'Electricity is the flow of electrons through a conductor. Key concepts: Voltage (V) = pressure, Current (I) = flow rate, Resistance (R) = opposition. Ohm\'s Law: V = I × R.',
+            'periodic table': 'The periodic table organizes 118 elements by atomic number. Rows are called periods, columns are groups. Metals are on the left, nonmetals on the right. Noble gases (Group 18) are the most stable.',
+            'atom': 'Atomic structure consists of protons (positive) and neutrons (neutral) in the nucleus, occupied by electrons (negative) in shells. Atomic number = number of protons. Mass number = protons + neutrons.',
+            
+            // Math
+            'algebra': 'Algebra is a branch of mathematics dealing with symbols and the rules for manipulating those symbols. In x + 2 = 5, x is a variable. Key concepts: linear equations, quadratic equations, polynomials.',
+            'pythagoras': 'Pythagoras theorem states that in a right-angled triangle, the square of the hypotenuse is equal to the sum of the squares of the other two sides (a² + b² = c²).',
+            'statistics': 'Statistics involves collecting, analyzing, interpreting, presenting, and organizing data. Key measures: Mean (average), Median (middle value), Mode (most frequent), Standard Deviation (spread).',
+
+            // Social Science & History
+            'democracy': 'Democracy is a system of government where citizens exercise power by voting. India is the world\'s largest democracy with a parliamentary system. Key features: universal adult suffrage, fundamental rights, independent judiciary.',
+            'constitution': 'The Constitution of India is the supreme law of India. It was adopted on 26 November 1949 and came into effect on 26 January 1950. Dr. B.R. Ambedkar was the chairman of the drafting committee.',
+            'freedom struggle': 'India\'s freedom struggle involved movements like Non-Cooperation (1920), Civil Disobedience (1930), and Quit India (1942). Leaders: Mahatma Gandhi, Subhas Chandra Bose, Bhagat Singh, Sardar Patel.',
+            'geography': 'Geography is the study of places and the relationships between people and their environments. Physical geography covers landforms, climate, and ecosystems. Human geography covers culture, economy, and migration.',
+
+            // Government Schemes
+            'pradhan mantri': 'Pradhan Mantri Awas Yojana (PMAY) provides affordable housing. Eligibility: Annual income below ₹18 lakh for urban, ₹3 lakh for rural. Benefits: Interest subsidy of 3-6.5% on home loans up to ₹6 lakh.',
+            'scholarship': 'PM Yasasvi Scholarship Scheme is for OBC, EBC, and DNT students studying in Class 9-12. Features: computer-based test, income limit ₹2.5 lakh/year. Benefits: ₹75,000 to ₹1,25,000 per year.',
+            'farmer': 'PM-KISAN scheme provides ₹6,000 per year to landholding farmer families in three equal installments. Eligibility: Valid land ownership record. Exclusions: Institutional landholders, income tax payers.',
+            'pension': 'Atal Pension Yojana (APY) provides a guaranteed minimum monthly pension of ₹1000-₹5000 at age 60. Eligibility: Citizens aged 18-40 with a savings bank account. Contribution depends on entry age and pension amount.',
         };
 
         for (const [keyword, content] of Object.entries(mockKnowledge)) {
@@ -201,7 +218,7 @@ class RAGService {
             }
         }
 
-        return 'General educational context: This is a knowledge base for rural students covering NCERT curriculum from Class 6-12 and central/state government welfare schemes.';
+        return 'General educational and civic context: AskBox assists rural students (Classes 6-12) with curriculum topics (Science, Math, Social Studies) and citizens with government welfare schemes (housing, scholarships, farming). Please answer generally based on this role.';
     }
 
     /**

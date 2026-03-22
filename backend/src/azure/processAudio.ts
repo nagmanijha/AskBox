@@ -7,7 +7,8 @@ import { wrapPcmToWav } from './wavHelper';
 import { v4 as uuidv4 } from 'uuid';
 
 // ── Service Imports ──
-import { CallSession, ConversationTurn } from './callSession';
+import { CallSession } from './callSession';
+import { ConversationTurn } from '../shared/types';
 import { redisService } from './redisClient';
 import { sttService, STTController, STTResult } from './sttService';
 import { ragService } from './ragService';
@@ -62,7 +63,7 @@ export class AudioPipeline {
 
         // Extract explicit language preference if provided
         const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-        const langParam = urlObj.searchParams.get('lang');
+        const langParam = urlObj.searchParams.get('lang') || urlObj.searchParams.get('language');
         if (langParam) {
             session.setLanguage(langParam, true);
         }
@@ -101,6 +102,15 @@ export class AudioPipeline {
                         const pcmBuffer = Buffer.from(payload.audioData.data, 'base64');
                         session.pushAudio(pcmBuffer);
                         sttController.pushAudio(pcmBuffer);
+                    } else if (payload.kind === 'Transcript' && payload.text) {
+                        // Browser STT transcript — frontend sends recognized speech as text
+                        const lang = payload.language || session.language;
+                        logger.info(`[Pipeline:${callId}] Browser transcript marker: "${payload.text}"`);
+                        if (payload.language) {
+                            session.setLanguage(payload.language, true);
+                        }
+                        session.addTurn('user', payload.text);
+                        this.executeAIWorkflow(session, payload.text);
                     } else if (payload.kind === 'TextData' && payload.text) {
                         logger.info(`[Pipeline:${session.sessionId}] 💬 UI Text Input bypass: "${payload.text}"`);
                         session.addTurn('user', payload.text);
