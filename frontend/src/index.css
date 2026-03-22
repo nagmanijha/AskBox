@@ -1,3 +1,248 @@
+<<<<<<< HEAD
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base Reset */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Global Input Stability */
+input {
+  color: inherit;
+  background-color: transparent;
+}
+
+input::placeholder {
+  color: #888888;
+}
+
+/* Fix Chrome Autofill white-on-white bug */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-text-primary) !important;
+  -webkit-box-shadow: 0 0 0px 1000px transparent inset !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* 
+  LEGACY THEME VARIABLES & OVERRIDES 
+  (Matches original dark/yellow design)
+*/
+.theme-legacy {
+  --font-heading: 'Plus Jakarta Sans', sans-serif;
+  --font-body: 'Plus Jakarta Sans', sans-serif;
+
+  /* Colors matches original hardcoded values */
+  --color-bg-main: #0a0f1c;
+  --color-bg-sidebar: rgba(10, 15, 28, 0.5);
+  --color-bg-surface: rgba(17, 24, 39, 0.6);
+  --color-bg-input: rgba(244, 171, 37, 0.05);
+  /* primary/5 */
+
+  --color-text-primary: #f1f5f9;
+  /* Slate-100 */
+  --color-text-secondary: #94a3b8;
+  /* Slate-400 */
+
+  --color-brand: #f4ab25;
+  /* The original yellow/gold */
+  --color-brand-contrast: #0a0f1c;
+
+  --color-accent: #2dd4bf;
+  /* Teal */
+
+  --color-border: rgba(244, 171, 37, 0.2);
+
+  --shadow-card: none;
+  --radius-card: 1.5rem;
+  /* rounded-3xl */
+}
+
+/* 
+  MODERN THEME VARIABLES & OVERRIDES
+  (Clean, Indigo based, 8-point grid)
+*/
+.theme-modern {
+  --font-heading: 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+
+  /* Specific palette: Indigo-600 primary, Emerald-600 secondary */
+  --color-bg-main: #F9FAFB;
+  /* Gray-50 */
+  --color-bg-sidebar: #FFFFFF;
+  --color-bg-surface: #FFFFFF;
+  --color-bg-input: #F3F4FB;
+  /* Indigo/5 */
+
+  --color-text-primary: #111827;
+  /* Gray-900 */
+  --color-text-secondary: #4B5563;
+  /* Gray-600 */
+
+  --color-brand: #4F46E5;
+  /* Indigo-600 */
+  --color-brand-contrast: #FFFFFF;
+
+  --color-accent: #10B981;
+  /* Emerald-500 */
+
+  --color-border: #E5E7EB;
+  /* Gray-200 */
+
+  --shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  --radius-card: 0.75rem;
+  /* 12px */
+
+  /* 8-point block spacing tokens */
+  --space-xs: 8px;
+  --space-sm: 16px;
+  --space-md: 24px;
+  --space-lg: 32px;
+}
+
+/* Apply variables to body */
+body {
+  background-color: var(--color-bg-main);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Typography Scale */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-heading);
+}
+
+.theme-modern h1 {
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.theme-modern h2 {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.33;
+}
+
+.theme-modern h3 {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.theme-modern p,
+.theme-modern li {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.theme-modern .text-small {
+  font-size: 12px;
+  line-height: 1.33;
+}
+
+.theme-modern .text-kpi {
+  font-family: monospace;
+  font-weight: 600;
+  font-size: 32px;
+}
+
+/* Component Classes that adapt to theme */
+.ds-card {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 1.5rem;
+  /* 24px */
+}
+
+/* Override Legacy Glass Panel only in modern mode to be solid */
+.theme-modern .glass-panel {
+  background: #FFFFFF;
+  backdrop-filter: none;
+  border: 1px solid #E5E7EB;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+}
+
+.theme-legacy .glass-panel {
+  background: rgba(17, 24, 39, 0.6);
+  /* surface-dark (slate-900) */
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(244, 171, 37, 0.1);
+  /* primary */
+}
+
+/* Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 10px;
+}
+
+/* Animation Utils */
+.glow-primary {
+  box-shadow: 0 0 15px rgba(244, 171, 37, 0.2);
+}
+
+.glow-teal {
+  box-shadow: 0 0 15px rgba(45, 212, 191, 0.2);
+}
+
+.glow-saffron {
+  box-shadow: 0 0 20px rgba(244, 171, 37, 0.3);
+}
+
+.bg-mesh {
+  background-image: radial-gradient(at 0% 0%, rgba(244, 171, 37, 0.15) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(45, 212, 191, 0.15) 0px, transparent 50%);
+}
+
+.audio-wave-bg {
+  background-image: radial-gradient(circle at 2px 2px, rgba(244, 171, 37, 0.05) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+.scanning-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 100%;
+  background-image: linear-gradient(to right, transparent, rgba(79, 70, 229, 1) 50%, transparent);
+  /* Using Indigo for scanning line */
+  opacity: 0.3;
+}
+
+.sunburst-segment {
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.sunburst-segment:hover {
+  opacity: 0.8;
+  transform: scale(1.02);
+=======
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -110,4 +355,5 @@ body {
 .sunburst-segment:hover {
   opacity: 0.8;
   transform: scale(1.02);
+>>>>>>> pr-3
 }

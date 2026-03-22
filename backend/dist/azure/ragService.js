@@ -1,3 +1,201 @@
+<<<<<<< HEAD
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ragService = void 0;
+const logger_1 = require("../config/logger");
+const fuse_js_1 = __importDefault(require("fuse.js"));
+const connection_1 = require("../database/connection");
+const redisClient_1 = require("./redisClient");
+/**
+ * Phase 2 — Checkpoint 4 & 5: RAG Retrieval & Prompt Assembly
+ *
+ * Two-tier retrieval:
+ *   FAST PATH → Redis cache (< 5ms for frequently asked questions)
+ *   SLOW PATH → Azure AI Search (50-200ms for curriculum/scheme lookup)
+ *   FALLBACK  → Generic response if both timeout (> 3 seconds)
+ *
+ * After retrieval, assembles the full GPT-4o prompt with:
+ *   1. System instructions (language, role, tone)
+ *   2. Retrieved RAG context
+ *   3. Conversation history (last N turns from Redis/memory)
+ *   4. The current user query
+ */
+/** Maximum time to wait for RAG retrieval before falling back */
+const RAG_TIMEOUT_MS = 3000;
+/** Default system prompt template */
+const SYSTEM_PROMPT_TEMPLATE = `You are AskBox, an educational and government services voice assistant for rural communities in India.
+
+CRITICAL INSTRUCTIONS:
+- You MUST reply in {{LANGUAGE}}.
+- Keep responses concise (2-3 sentences max) — this is a phone call, not a chat.
+- Use simple words suitable for students and rural citizens.
+- If you reference a government scheme, include the scheme name and eligibility.
+- If you don't know the answer, say so honestly in the caller's language.
+
+CONTEXT FROM KNOWLEDGE BASE:
+{{RAG_CONTEXT}}`;
+class RAGService {
+    /**
+     * Full RAG pipeline: retrieve context → assemble prompt.
+     *
+     * @param query        The user's transcribed question
+     * @param language     Detected language (e.g. "hi-IN")
+     * @param history      Conversation history for multi-turn context
+     */
+    async retrieveAndAssemble(query, language, history) {
+        const startTime = Date.now();
+        // ── Step 1: Retrieve RAG context ──
+        const { context, source } = await this.retrieveContext(query);
+        const retrievalLatencyMs = Date.now() - startTime;
+        logger_1.logger.info(`[RAG] Retrieved context in ${retrievalLatencyMs}ms from ${source}`);
+        // ── Step 2: Assemble prompt messages ──
+        const languageName = this.getLanguageName(language);
+        const systemPrompt = SYSTEM_PROMPT_TEMPLATE
+            .replace('{{LANGUAGE}}', languageName)
+            .replace('{{RAG_CONTEXT}}', context || 'No specific context available.');
+        const messages = [
+            { role: 'system', content: systemPrompt },
+        ];
+        // Add conversation history (multi-turn)
+        for (const turn of history) {
+            messages.push({
+                role: turn.role === 'user' ? 'user' : 'assistant',
+                content: turn.content,
+            });
+        }
+        // Add the current query
+        messages.push({ role: 'user', content: query });
+        return {
+            messages,
+            context: context || '',
+            retrievalSource: source,
+            retrievalLatencyMs,
+        };
+    }
+    /**
+     * Two-tier context retrieval with timeout fallback.
+     */
+    async retrieveContext(query) {
+        // ── FAST PATH: Check Redis cache first ──
+        try {
+            const cached = await redisClient_1.redisService.getCachedRAG(query);
+            if (cached) {
+                return { context: cached, source: 'cache' };
+            }
+        }
+        catch (err) {
+            logger_1.logger.error('[RAG] Redis cache check failed', err);
+        }
+        // ── SLOW PATH: Azure AI Search with timeout ──
+        try {
+            const context = await this.searchWithTimeout(query, RAG_TIMEOUT_MS);
+            if (context) {
+                // Cache the result for next time
+                redisClient_1.redisService.cacheRAGResult(query, context).catch(() => { });
+                return { context, source: 'search' };
+            }
+        }
+        catch (err) {
+            logger_1.logger.error('[RAG] Azure AI Search failed or timed out', err);
+        }
+        // ── FALLBACK: No context available ──
+        return {
+            context: 'No specific knowledge base context found. Answer from your general knowledge.',
+            source: 'fallback',
+        };
+    }
+    /**
+     * Query PostgreSQL + Fuse.js with a strict timeout.
+     * If the search takes too long, we abort and fall back to generic LLM response
+     * rather than keeping the caller waiting in silence.
+     */
+    async searchWithTimeout(query, timeoutMs) {
+        return new Promise(async (resolve) => {
+            const timer = setTimeout(() => {
+                logger_1.logger.warn(`[RAG] Search timed out after ${timeoutMs}ms — falling back`);
+                resolve(null);
+            }, timeoutMs);
+            try {
+                // Fetch all indexed documents from DB
+                // In production, you'd cache this or use pgvector. For this demo, we fetch and use Fuse.
+                const result = await connection_1.pool.query('SELECT original_name, metadata->>\'content\' as content FROM knowledge_base_documents WHERE indexing_status = $1', ['indexed']);
+                if (result.rowCount === 0) {
+                    clearTimeout(timer);
+                    resolve(this.getMockContext(query));
+                    return;
+                }
+                // Setup Fuse.js for fuzzy retrieval
+                const documents = result.rows.filter(r => r.content);
+                const fuse = new fuse_js_1.default(documents, {
+                    keys: ['content', 'original_name'],
+                    includeScore: true,
+                    threshold: 0.8, // Allow fuzzy matches
+                    ignoreLocation: true
+                });
+                const searchResults = fuse.search(query, { limit: 3 });
+                clearTimeout(timer);
+                if (searchResults.length > 0) {
+                    const combined = searchResults.map((r) => r.item.content).join('\n\n---\n\n');
+                    resolve(combined);
+                }
+                else {
+                    resolve(this.getMockContext(query));
+                }
+            }
+            catch (err) {
+                clearTimeout(timer);
+                logger_1.logger.error('[RAG] Search query execution failed', err);
+                resolve(this.getMockContext(query));
+            }
+        });
+    }
+    /**
+     * Mock context provider for local development.
+     * Returns relevant educational or scheme content based on keywords.
+     */
+    getMockContext(query) {
+        const lower = query.toLowerCase();
+        const mockKnowledge = {
+            'photosynthesis': 'Photosynthesis is the process by which green plants use sunlight, water, and carbon dioxide to produce oxygen and energy in the form of sugar. It occurs in the chloroplasts of plant cells. The equation is: 6CO2 + 6H2O + light energy → C6H12O6 + 6O2.',
+            'newton': 'Newton\'s Three Laws of Motion: 1) An object at rest stays at rest unless acted upon by a force. 2) Force = Mass × Acceleration (F=ma). 3) For every action, there is an equal and opposite reaction.',
+            'solar': 'The solar system has 8 planets: Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and Neptune. Pluto was reclassified as a dwarf planet in 2006.',
+            'water cycle': 'The water cycle has 4 stages: Evaporation (water turns to vapor), Condensation (vapor forms clouds), Precipitation (rain/snow falls), Collection (water gathers in rivers/oceans).',
+            'pradhan mantri': 'Pradhan Mantri Awas Yojana (PMAY) provides affordable housing. Eligibility: Annual income below ₹18 lakh for urban, ₹3 lakh for rural. Benefits: Interest subsidy of 3-6.5% on home loans up to ₹6 lakh.',
+            'periodic table': 'The periodic table organizes 118 elements by atomic number. Rows are called periods, columns are groups. Metals are on the left, nonmetals on the right. Noble gases (Group 18) are the most stable.',
+            'democracy': 'Democracy is a system of government where citizens exercise power by voting. India is the world\'s largest democracy with a parliamentary system. Key features: universal adult suffrage, fundamental rights, independent judiciary.',
+            'electricity': 'Electricity is the flow of electrons through a conductor. Key concepts: Voltage (V) = pressure, Current (I) = flow rate, Resistance (R) = opposition. Ohm\'s Law: V = I × R.',
+            'cell division': 'Cell division has two types: Mitosis (produces 2 identical cells for growth/repair) and Meiosis (produces 4 different cells for reproduction). Stages of mitosis: Prophase, Metaphase, Anaphase, Telophase.',
+            'climate change': 'Climate change is the long-term shift in global temperatures caused by greenhouse gas emissions. Main causes: burning fossil fuels, deforestation. Effects: rising sea levels, extreme weather, crop failure.',
+        };
+        for (const [keyword, content] of Object.entries(mockKnowledge)) {
+            if (lower.includes(keyword)) {
+                return content;
+            }
+        }
+        return 'General educational context: This is a knowledge base for rural students covering NCERT curriculum from Class 6-12 and central/state government welfare schemes.';
+    }
+    /**
+     * Map language codes to human-readable names for the system prompt.
+     */
+    getLanguageName(langCode) {
+        const map = {
+            'en-IN': 'English',
+            'hi-IN': 'Hindi',
+            'ta-IN': 'Tamil',
+            'te-IN': 'Telugu',
+            'kn-IN': 'Kannada',
+            'ml-IN': 'Malayalam',
+            'bn-IN': 'Bengali',
+            'mr-IN': 'Marathi',
+        };
+        return map[langCode] || 'English';
+    }
+}
+exports.ragService = new RAGService();
+=======
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ragService = void 0;
@@ -185,4 +383,5 @@ class RAGService {
     }
 }
 exports.ragService = new RAGService();
+>>>>>>> pr-3
 //# sourceMappingURL=ragService.js.map
