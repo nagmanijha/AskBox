@@ -13,10 +13,9 @@ declare class STTService {
     /**
      * Create a real-time STT recognizer bound to a CallSession.
      *
-     * When Azure Speech SDK is available:
-     *   - Creates a PushAudioInputStream for feeding PCM from ACS
-     *   - Configures AutoDetectSourceLanguage for all 8 languages
-     *   - Attaches "recognizing" (interim) and "recognized" (final) events
+     * When Deepgram SDK is available:
+     *   - Creates a WebSocket connection to feed PCM from ACS
+     *   - Configures language detection
      *
      * Returns a controller object with methods to push audio and stop.
      */

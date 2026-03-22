@@ -1,72 +1,67 @@
-import { BlobServiceClient, ContainerClient } from '@azure/storage-blob';
-import { config } from '../config';
+import fs from 'fs';
+import path from 'path';
 import { logger } from '../config/logger';
 
 /**
- * Azure Blob Storage client wrapper.
- * Used for uploading knowledge base documents.
- * 
- * NOTE: Replace placeholder credentials with real Azure Storage credentials.
+ * Local File Storage client wrapper.
+ * Replaces Azure Blob Storage for knowledge base document uploads.
  */
 class StorageService {
-    private containerClient: ContainerClient | null = null;
+    private uploadDir: string;
 
-    /** Initialize Blob Storage client. Call once at startup. */
+    constructor() {
+        this.uploadDir = path.join(__dirname, '../../public/uploads');
+    }
+
+    /** Initialize Local Storage. Call once at startup. */
     async initialize(): Promise<void> {
-        if (!config.storage.connectionString) {
-            logger.warn('Azure Storage credentials not configured — uploads will use local storage');
-            return;
-        }
-
         try {
-            const blobServiceClient = BlobServiceClient.fromConnectionString(
-                config.storage.connectionString
-            );
-            this.containerClient = blobServiceClient.getContainerClient(config.storage.containerName);
-            await this.containerClient.createIfNotExists({ access: 'blob' });
-            logger.info('Azure Blob Storage client initialized');
+            if (!fs.existsSync(this.uploadDir)) {
+                fs.mkdirSync(this.uploadDir, { recursive: true });
+            }
+            logger.info('Local file storage initialized');
         } catch (error) {
-            logger.error('Failed to initialize Azure Blob Storage', { error });
+            logger.error('Failed to initialize local file storage', { error });
         }
     }
 
-    /** Upload a file to blob storage and return the URL */
+    /** Save a file to local disk and return the URL */
     async uploadFile(
         filename: string,
         buffer: Buffer,
         contentType: string
     ): Promise<string | null> {
-        if (!this.containerClient) {
-            logger.warn('Storage not configured — skipping blob upload');
-            return null;
-        }
-
         try {
-            const blockBlobClient = this.containerClient.getBlockBlobClient(filename);
-            await blockBlobClient.upload(buffer, buffer.length, {
-                blobHTTPHeaders: { blobContentType: contentType },
-            });
-            return blockBlobClient.url;
+            // Ensure safe filename
+            const safeFilename = path.basename(filename);
+            const filepath = path.join(this.uploadDir, safeFilename);
+            
+            await fs.promises.writeFile(filepath, buffer);
+            
+            // Return a local URL path
+            return `/uploads/${safeFilename}`;
         } catch (error) {
-            logger.error('Failed to upload file to blob storage', { error, filename });
+            logger.error('Failed to save file locally', { error, filename });
             throw error;
         }
     }
 
-    /** Delete a file from blob storage */
+    /** Delete a file from local storage */
     async deleteFile(filename: string): Promise<void> {
-        if (!this.containerClient) return;
-
         try {
-            const blockBlobClient = this.containerClient.getBlockBlobClient(filename);
-            await blockBlobClient.deleteIfExists();
+            const safeFilename = path.basename(filename);
+            const filepath = path.join(this.uploadDir, safeFilename);
+            
+            if (fs.existsSync(filepath)) {
+                await fs.promises.unlink(filepath);
+            }
         } catch (error) {
-            logger.error('Failed to delete file from blob storage', { error, filename });
+            logger.error('Failed to delete file locally', { error, filename });
         }
     }
 
     isConnected(): boolean {
-        return this.containerClient !== null;
+        return true; // Always connected to local FS
     }
 }
 

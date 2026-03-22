@@ -48,6 +48,12 @@ class RedisService {
                 lazyConnect: true,
             });
 
+            // Prevent unhandled error events from crashing the process
+            this.client.on('error', (err: any) => {
+                logger.warn('[Redis] Client error event', { err: err.message });
+                this.connected = false;
+            });
+
             await this.client.connect();
             this.connected = true;
             logger.info('[Redis] Connected successfully');

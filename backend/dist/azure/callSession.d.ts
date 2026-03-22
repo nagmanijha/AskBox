@@ -42,6 +42,11 @@ export declare class CallSession {
      */
     startNewTurn(): AbortController;
     /**
+     * Abort the current AI turn without starting a new one.
+     * Used for barge-in protection.
+     */
+    abortCurrentTurn(): void;
+    /**
      * End the current AI turn — clears the AbortController and audio buffer.
      */
     endTurn(): void;

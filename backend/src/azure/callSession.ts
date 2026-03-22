@@ -39,8 +39,9 @@ export class CallSession {
     public isProcessing: boolean = false;
     public conversationHistory: ConversationTurn[] = [];
 
-    // Barge-in: one AbortController per active AI turn
+    // Barge-in & De-duplication
     public turnAbortController: AbortController | null = null;
+    public lastSpeechTimestamp: number = 0;
 
     // Audio buffer for incoming PCM packets
     public audioBuffer: Buffer[] = [];

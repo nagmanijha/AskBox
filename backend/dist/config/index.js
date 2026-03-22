@@ -34,11 +34,17 @@ exports.config = {
         key: process.env.AZURE_SEARCH_KEY || '',
         indexName: process.env.AZURE_SEARCH_INDEX || 'askbox-knowledge',
     },
+    // Google Gemini
+    gemini: {
+        apiKey: process.env.GEMINI_API_KEY || '',
+        model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    },
     // Azure OpenAI
-    openai: {
+    azureOpenAI: {
+        apiKey: process.env.AZURE_OPENAI_API_KEY || '',
         endpoint: process.env.AZURE_OPENAI_ENDPOINT || '',
-        key: process.env.AZURE_OPENAI_KEY || '',
-        deployment: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4',
+        deployment: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5.3-chat',
+        apiVersion: process.env.AZURE_OPENAI_VERSION || '2024-02-15-preview',
     },
     // Azure Blob Storage
     storage: {

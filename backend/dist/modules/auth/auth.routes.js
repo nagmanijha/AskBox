@@ -15,7 +15,6 @@ const registerSchema = zod_1.z.object({
     email: zod_1.z.string().email('Invalid email address'),
     password: zod_1.z.string().min(8, 'Password must be at least 8 characters'),
     name: zod_1.z.string().min(2, 'Name must be at least 2 characters'),
-    role: zod_1.z.enum(['admin', 'viewer']).optional().default('admin'),
 });
 // Public routes
 router.post('/login', (0, validate_1.validateBody)(loginSchema), (req, res, next) => auth_controller_1.authController.login(req, res, next));

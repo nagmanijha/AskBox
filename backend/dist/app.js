@@ -8,13 +8,13 @@ const cors_1 = __importDefault(require("cors"));
 const helmet_1 = __importDefault(require("helmet"));
 const morgan_1 = __importDefault(require("morgan"));
 const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
+const path_1 = __importDefault(require("path"));
+const fs_1 = __importDefault(require("fs"));
 const http_1 = require("http");
 const ws_1 = require("ws");
 const config_1 = require("./config");
 const logger_1 = require("./config/logger");
 const connection_1 = require("./database/connection");
-const cosmosClient_1 = require("./azure/cosmosClient");
-const searchClient_1 = require("./azure/searchClient");
 const storageClient_1 = require("./azure/storageClient");
 const processAudio_1 = require("./azure/processAudio");
 const redisClient_1 = require("./azure/redisClient");
@@ -65,6 +65,19 @@ app.get('/api/health', (_req, res) => {
         },
     });
 });
+// Serve the prebuilt admin dashboard (no Vite/esbuild needed)
+const frontendDistPath = path_1.default.resolve(__dirname, '../../frontend/dist');
+if (fs_1.default.existsSync(frontendDistPath)) {
+    app.use(express_1.default.static(frontendDistPath));
+    // SPA fallback (keep API/WebSocket routes working)
+    app.get('*', (req, res, next) => {
+        if (req.path.startsWith('/api') || req.path.startsWith('/ws') || req.path.startsWith('/acs-audio')) {
+            return next();
+        }
+        return res.sendFile(path_1.default.join(frontendDistPath, 'index.html'));
+    });
+    logger_1.logger.info(`[Frontend] Serving admin dashboard from ${frontendDistPath}`);
+}
 // ─── WebSocket for Real-time Dashboard Updates ──────────────────────────────
 const wss = new ws_1.WebSocketServer({ noServer: true });
 wss.on('connection', (ws) => {
@@ -96,30 +109,6 @@ acsWss.on('connection', (ws, req) => {
     // Pass the real-time byte stream to the customized Audio processing pipeline
     processAudio_1.audioPipeline.handleConnection(ws, req);
 });
-// ─── ACS Incoming Call Webhook ──────────────────────────────────────────────
-// Phase 1, Checkpoint 1: ACS triggers this webhook when a toll-free call arrives.
-// We answer the call and redirect audio to the WebSocket pipeline.
-app.post('/api/acs/incoming-call', (req, res) => {
-    const incomingCallContext = req.body?.incomingCallContext;
-    const callerNumber = req.body?.from?.phoneNumber?.value || 'unknown';
-    logger_1.logger.info(`[ACS Webhook] Incoming call from ${callerNumber}`);
-    // Respond to ACS with an "Answer" action pointing to our WebSocket
-    res.json({
-        values: [{
-                action: {
-                    type: 'Microsoft.Communication.Answer',
-                    callbackUri: `ws://${req.headers.host}/acs-audio`,
-                    incomingCallContext,
-                    mediaStreamingOptions: {
-                        transportUrl: `ws://${req.headers.host}/acs-audio`,
-                        transportType: 'websocket',
-                        contentType: 'audio',
-                        audioChannelType: 'unmixed',
-                    },
-                },
-            }],
-    });
-});
 // ─── Active Sessions Endpoint (for admin dashboard) ────────────────────────
 app.get('/api/calls/active-sessions', (_req, res) => {
     res.json({
@@ -141,14 +130,15 @@ async function startServer() {
     try {
         // Test database connection
         await (0, connection_1.testConnection)();
-        // Initialize Azure services
-        await cosmosClient_1.cosmosService.initialize();
-        searchClient_1.searchService.initialize();
-        await redisClient_1.redisService.initialize();
-        await storageClient_1.storageService.initialize();
+        // Initialize other services
+        logger_1.logger.info('Initializing connected services...');
+        storageClient_1.storageService.initialize();
+        redisClient_1.redisService.initialize();
         // Add robust HTTP Upgrade handling for multiple WebSocket paths
         server.on('upgrade', (request, socket, head) => {
             const pathname = request.url?.split('?')[0];
+            const origin = request.headers.origin;
+            logger_1.logger.info(`[Upgrade] Incoming connection: ${pathname} from ${origin}`);
             if (pathname === '/ws') {
                 wss.handleUpgrade(request, socket, head, (ws) => {
                     wss.emit('connection', ws, request);
@@ -160,11 +150,12 @@ async function startServer() {
                 });
             }
             else {
+                logger_1.logger.warn(`[Upgrade] Path rejected: ${pathname}`);
                 socket.destroy();
             }
         });
         // Start HTTP server
-        server.listen(config_1.config.port, '0.0.0.0', () => {
+        server.listen(config_1.config.port, '::', () => {
             logger_1.logger.info(`
 ╔══════════════════════════════════════════════════╗
 ║         AskBox Admin Backend Running !           ║

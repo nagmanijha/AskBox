@@ -3,14 +3,14 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
+import path from 'path';
+import fs from 'fs';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 
 import { config } from './config';
 import { logger } from './config/logger';
 import { testConnection } from './database/connection';
-import { cosmosService } from './azure/cosmosClient';
-import { searchService } from './azure/searchClient';
 import { storageService } from './azure/storageClient';
 import { audioPipeline } from './azure/processAudio';
 import { redisService } from './azure/redisClient';
@@ -73,6 +73,22 @@ app.get('/api/health', (_req, res) => {
     });
 });
 
+// Serve the prebuilt admin dashboard (no Vite/esbuild needed)
+const frontendDistPath = path.resolve(__dirname, '../../frontend/dist');
+if (fs.existsSync(frontendDistPath)) {
+    app.use(express.static(frontendDistPath));
+
+    // SPA fallback (keep API/WebSocket routes working)
+    app.get('*', (req, res, next) => {
+        if (req.path.startsWith('/api') || req.path.startsWith('/ws') || req.path.startsWith('/acs-audio')) {
+            return next();
+        }
+        return res.sendFile(path.join(frontendDistPath, 'index.html'));
+    });
+
+    logger.info(`[Frontend] Serving admin dashboard from ${frontendDistPath}`);
+}
+
 // ─── WebSocket for Real-time Dashboard Updates ──────────────────────────────
 
 const wss = new WebSocketServer({ noServer: true });
@@ -114,32 +130,7 @@ acsWss.on('connection', (ws: WebSocket, req: any) => {
     audioPipeline.handleConnection(ws, req);
 });
 
-// ─── ACS Incoming Call Webhook ──────────────────────────────────────────────
-// Phase 1, Checkpoint 1: ACS triggers this webhook when a toll-free call arrives.
-// We answer the call and redirect audio to the WebSocket pipeline.
-app.post('/api/acs/incoming-call', (req, res) => {
-    const incomingCallContext = req.body?.incomingCallContext;
-    const callerNumber = req.body?.from?.phoneNumber?.value || 'unknown';
 
-    logger.info(`[ACS Webhook] Incoming call from ${callerNumber}`);
-
-    // Respond to ACS with an "Answer" action pointing to our WebSocket
-    res.json({
-        values: [{
-            action: {
-                type: 'Microsoft.Communication.Answer',
-                callbackUri: `ws://${req.headers.host}/acs-audio`,
-                incomingCallContext,
-                mediaStreamingOptions: {
-                    transportUrl: `ws://${req.headers.host}/acs-audio`,
-                    transportType: 'websocket',
-                    contentType: 'audio',
-                    audioChannelType: 'unmixed',
-                },
-            },
-        }],
-    });
-});
 
 // ─── Active Sessions Endpoint (for admin dashboard) ────────────────────────
 app.get('/api/calls/active-sessions', (_req, res) => {
@@ -168,11 +159,10 @@ async function startServer(): Promise<void> {
         // Test database connection
         await testConnection();
 
-        // Initialize Azure services
-        await cosmosService.initialize();
-        searchService.initialize();
-        await redisService.initialize();
-        await storageService.initialize();
+        // Initialize other services
+        logger.info('Initializing connected services...');
+        storageService.initialize();
+        redisService.initialize();
 
         // Add robust HTTP Upgrade handling for multiple WebSocket paths
         server.on('upgrade', (request, socket, head) => {

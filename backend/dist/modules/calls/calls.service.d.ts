@@ -1,7 +1,7 @@
 import { CallLog, PaginatedResponse } from '../../shared/types';
 /**
- * Call logs service — reads call data from Azure Cosmos DB.
- * Falls back to mock data when Cosmos DB is not configured.
+ * Call logs service — reads call data from PostgreSQL telemetry table.
+ * Falls back to mock data when database is empty.
  */
 export declare class CallsService {
     /** Get paginated call logs with filters */
@@ -13,7 +13,7 @@ export declare class CallsService {
     }): Promise<PaginatedResponse<CallLog>>;
     /** Get a single call by ID */
     getCallById(id: string): Promise<CallLog | null>;
-    /** Get active call count (placeholder — uses ACS in production) */
+    /** Get active call count */
     getActiveCallCount(): Promise<number>;
     /** Generate mock calls for development */
     private generateMockCalls;

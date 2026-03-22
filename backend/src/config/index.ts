@@ -42,6 +42,14 @@ export const config = {
         model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
     },
 
+    // Azure OpenAI
+    azureOpenAI: {
+        apiKey: process.env.AZURE_OPENAI_API_KEY || '',
+        endpoint: process.env.AZURE_OPENAI_ENDPOINT || '',
+        deployment: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5.3-chat',
+        apiVersion: process.env.AZURE_OPENAI_VERSION || '2024-02-15-preview',
+    },
+
     // Azure Blob Storage
     storage: {
         connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING || '',

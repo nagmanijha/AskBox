@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useTheme } from '../context/ThemeContext';
 
 interface DemoCallTrackerProps {
     scenario?: {
@@ -9,72 +10,37 @@ interface DemoCallTrackerProps {
     };
 }
 
-/** Silence threshold — RMS below this = "not speaking" */
-const SILENCE_THRESHOLD = 0.01;
-
-/**
- * Convert Float32 PCM samples (-1..1) to Int16 PCM (–32768..32767).
- * Returns a base64-encoded string of the 16-bit PCM data.
- */
-function float32ToBase64PCM16(float32: Float32Array): string {
-    const int16 = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    const bytes = new Uint8Array(int16.buffer);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
+// Extend Window for webkit SpeechRecognition
+interface IWindow extends Window {
+    webkitSpeechRecognition: any;
+    SpeechRecognition: any;
 }
+declare const window: IWindow;
 
-/**
- * Play a base64-encoded raw PCM-16kHz-16bit-mono buffer through an AudioContext.
- * We manually decode the raw PCM since decodeAudioData expects a codec header.
- */
-function playPCM16Audio(base64: string, ctx: AudioContext): void {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-    }
-
-    // Interpret as 16-bit signed integers
-    const int16 = new Int16Array(bytes.buffer);
-    const sampleRate = 16000;
-
-    // Create an AudioBuffer and fill with float samples
-    const audioBuffer = ctx.createBuffer(1, int16.length, sampleRate);
-    const channelData = audioBuffer.getChannelData(0);
-    for (let i = 0; i < int16.length; i++) {
-        channelData[i] = int16[i] / 32768;
-    }
-
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(ctx.destination);
-    source.start();
-}
+/** Map language codes to BCP-47 tags for SpeechRecognition & SpeechSynthesis */
+const LANG_MAP: Record<string, string> = {
+    'hi': 'hi-IN', 'en': 'en-IN', 'ta': 'ta-IN', 'te': 'te-IN',
+    'kn': 'kn-IN', 'ml': 'ml-IN', 'bn': 'bn-IN', 'mr': 'mr-IN',
+    'hi-IN': 'hi-IN', 'en-IN': 'en-IN', 'ta-IN': 'ta-IN', 'te-IN': 'te-IN',
+};
 
 export default function DemoCallTracker({ scenario }: DemoCallTrackerProps) {
-    const [status, setStatus] = useState<'idle' | 'connecting' | 'active' | 'completed' | 'error'>('idle');
+    const { designSystem } = useTheme();
+    const isModern = designSystem === 'modern';
+
+    const [status, setStatus] = useState<'idle' | 'connecting' | 'listening' | 'processing' | 'speaking' | 'completed' | 'error'>('idle');
     const [logs, setLogs] = useState<string[]>([]);
-    const [packetsSent, setPacketsSent] = useState(0);
-    const [messagesReceived, setMessagesReceived] = useState(0);
+    const [transcript, setTranscript] = useState('');
+    const [aiResponse, setAiResponse] = useState('');
     const [volume, setVolume] = useState(0);
-    const [isSpeaking, setIsSpeaking] = useState(false);
 
     const wsRef = useRef<WebSocket | null>(null);
     const logsEndRef = useRef<HTMLDivElement>(null);
+    const recognitionRef = useRef<any>(null);
     const mediaStreamRef = useRef<MediaStream | null>(null);
     const audioCtxRef = useRef<AudioContext | null>(null);
-    const playbackCtxRef = useRef<AudioContext | null>(null);
-    const processorRef = useRef<ScriptProcessorNode | null>(null);
-    const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-    const silenceStartRef = useRef<number | null>(null);
-    const packetCountRef = useRef(0);
+    const analyserRef = useRef<AnalyserNode | null>(null);
+    const animFrameRef = useRef<number | null>(null);
 
     const addLog = useCallback((msg: string) => {
         setLogs(prev => [...prev.slice(-49), `${new Date().toLocaleTimeString()} — ${msg}`]);
@@ -88,49 +54,182 @@ export default function DemoCallTracker({ scenario }: DemoCallTrackerProps) {
 
     // Cleanup on unmount
     useEffect(() => {
-        return () => { stopDemoCall(true); };
+        return () => { stopDemoCall(); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    /** Get the language code for recognition */
+    const getLang = () => {
+        const id = scenario?.id || 'en';
+        return LANG_MAP[id] || 'en-IN';
+    };
+
+    /** Start volume meter for visual feedback */
+    const startVolumeMeter = (stream: MediaStream) => {
+        const ctx = new AudioContext();
+        audioCtxRef.current = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        analyserRef.current = analyser;
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        const tick = () => {
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+            const avg = sum / dataArray.length;
+            setVolume(avg / 255);
+            animFrameRef.current = requestAnimationFrame(tick);
+        };
+        tick();
+    };
+
+    /** Speak text using the browser's built-in SpeechSynthesis (free TTS) */
+    const speakText = (text: string, language: string) => {
+        if (!window.speechSynthesis) {
+            addLog('⚠️ SpeechSynthesis not supported in this browser');
+            return;
+        }
+
+        // Cancel any ongoing speech
+        window.speechSynthesis.cancel();
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        const langCode = LANG_MAP[language] || language || 'en-IN';
+        utterance.lang = langCode;
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+
+        // Try to find an Indian voice
+        const voices = window.speechSynthesis.getVoices();
+        const match = voices.find(v => v.lang === langCode) ||
+                      voices.find(v => v.lang.startsWith(langCode.split('-')[0]));
+        if (match) utterance.voice = match;
+
+        utterance.onstart = () => {
+            setStatus('speaking');
+            addLog(`🔊 AI speaking (${langCode})...`);
+        };
+        utterance.onend = () => {
+            setStatus('listening');
+            addLog('✅ AI finished speaking. You can ask another question.');
+            // Restart recognition for next turn
+            startRecognition();
+        };
+        utterance.onerror = (e) => {
+            addLog(`⚠️ TTS error: ${e.error}`);
+            setStatus('listening');
+            startRecognition();
+        };
+
+        window.speechSynthesis.speak(utterance);
+    };
+
+    /** Start the browser Speech Recognition */
+    const startRecognition = () => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            addLog('❌ SpeechRecognition not supported. Use Chrome or Edge.');
+            return;
+        }
+
+        // Don't re-create if already running
+        if (recognitionRef.current) {
+            try { recognitionRef.current.stop(); } catch {}
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;      // One utterance at a time
+        recognition.interimResults = true;   // Show partial results
+        recognition.lang = getLang();
+        recognition.maxAlternatives = 1;
+
+        recognition.onresult = (event: any) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const t = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalTranscript += t;
+                } else {
+                    interimTranscript += t;
+                }
+            }
+
+            if (interimTranscript) {
+                setTranscript(interimTranscript);
+            }
+
+            if (finalTranscript) {
+                setTranscript(finalTranscript);
+                addLog(`🎤 You said: "${finalTranscript}"`);
+                setStatus('processing');
+                addLog('⏳ Sending to AI pipeline...');
+
+                // Send transcript to backend via WebSocket
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify({
+                        kind: 'Transcript',
+                        text: finalTranscript,
+                        language: getLang(),
+                    }));
+                }
+            }
+        };
+
+        recognition.onerror = (event: any) => {
+            if (event.error === 'no-speech') {
+                // Restart silently — user just hasn't spoken yet
+                if (status === 'listening') {
+                    setTimeout(() => startRecognition(), 300);
+                }
+                return;
+            }
+            addLog(`⚠️ Recognition error: ${event.error}`);
+        };
+
+        recognition.onend = () => {
+            // Auto-restart if we're still in listening mode
+            if (status === 'listening' && wsRef.current?.readyState === WebSocket.OPEN) {
+                setTimeout(() => startRecognition(), 300);
+            }
+        };
+
+        recognitionRef.current = recognition;
+        recognition.start();
+    };
+
+    /** Main entry: start the demo call */
     const startDemoCall = async () => {
         if (wsRef.current) return;
 
         setStatus('connecting');
         setLogs([]);
-        setPacketsSent(0);
-        setMessagesReceived(0);
-        packetCountRef.current = 0;
-        silenceStartRef.current = null;
+        setTranscript('');
+        setAiResponse('');
+        setVolume(0);
 
-        addLog(`Initializing ${scenario?.language || ''} live voice pipeline...`);
+        addLog(`Initializing ${scenario?.language || 'English'} live voice demo...`);
 
-        // ── Step 1: Get Microphone ──
-        let stream: MediaStream;
+        // ── Step 1: Get microphone (for volume visualization) ──
         try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    sampleRate: 16000,
-                    channelCount: 1,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                },
-            });
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             mediaStreamRef.current = stream;
+            startVolumeMeter(stream);
             addLog('🎤 Microphone access granted');
-        } catch (err) {
+        } catch {
             setStatus('error');
             addLog('❌ Microphone access denied. Please allow mic permission.');
-            console.error(err);
             return;
         }
 
-        // ── Step 2: Create AudioContext for capture (16kHz) ──
-        const audioCtx = new AudioContext({ sampleRate: 16000 });
-        audioCtxRef.current = audioCtx;
-
-        // Separate playback context at device default sample rate
-        const playbackCtx = new AudioContext();
-        playbackCtxRef.current = playbackCtx;
+        // ── Step 2: Load voices for SpeechSynthesis ──
+        if (window.speechSynthesis) {
+            window.speechSynthesis.getVoices(); // trigger lazy load
+        }
 
         // ── Step 3: Connect WebSocket ──
         try {
@@ -144,175 +243,148 @@ export default function DemoCallTracker({ scenario }: DemoCallTrackerProps) {
             wsRef.current = ws;
 
             ws.onopen = () => {
-                setStatus('active');
-                addLog('✅ WebSocket connected to Audio Pipeline');
-                addLog('🎤 Speak now — the AI listens for your question...');
-
-                // ── Wire up microphone → WebSocket via ScriptProcessor ──
-                const source = audioCtx.createMediaStreamSource(stream);
-                sourceRef.current = source;
-
-                // 4096 frames at 16kHz ≈ 256ms chunks
-                const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-                processorRef.current = processor;
-
-                source.connect(processor);
-                processor.connect(audioCtx.destination);
-
-                processor.onaudioprocess = (event: AudioProcessingEvent) => {
-                    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
-                    const input = event.inputBuffer.getChannelData(0);
-
-                    // ── Volume-based VAD ──
-                    let sum = 0;
-                    for (let i = 0; i < input.length; i++) {
-                        sum += Math.abs(input[i]);
-                    }
-                    const rms = sum / input.length;
-                    setVolume(rms);
-
-                    if (rms < SILENCE_THRESHOLD) {
-                        // Silence detected
-                        if (!silenceStartRef.current) {
-                            silenceStartRef.current = Date.now();
-                        }
-                        setIsSpeaking(false);
-                    } else {
-                        // User is speaking — reset silence timer
-                        silenceStartRef.current = null;
-                        setIsSpeaking(true);
-                    }
-
-                    // Always send audio (the backend's STT needs the full stream,
-                    // and uses its own silence timer to endpoint)
-                    const base64Data = float32ToBase64PCM16(input);
-
-                    const packet = JSON.stringify({
-                        kind: 'AudioData',
-                        audioData: {
-                            data: base64Data,
-                            encoding: 'base64',
-                            sampleRate: 16000,
-                            channels: 1,
-                        },
-                    });
-
-                    wsRef.current.send(packet);
-                    packetCountRef.current++;
-                    setPacketsSent(packetCountRef.current);
-                };
+                setStatus('listening');
+                addLog('✅ Connected to AI pipeline');
+                addLog('🎤 Speak now — ask any question...');
+                startRecognition();
             };
 
-            // ── Handle incoming TTS audio ──
             ws.onmessage = (event) => {
-                setMessagesReceived(prev => prev + 1);
                 try {
                     const msg = JSON.parse(event.data);
-                    if (msg.kind === 'AudioData' && msg.audioData?.data) {
-                        addLog('🔊 [TTS] Playing AI audio response...');
-                        // Play the received PCM audio through speakers
-                        if (playbackCtxRef.current) {
-                            playPCM16Audio(msg.audioData.data, playbackCtxRef.current);
+
+                    if (msg.kind === 'TextResponse' && msg.text) {
+                        // ── AI text response → speak it via browser TTS ──
+                        setAiResponse(msg.text);
+                        addLog(`🤖 AI: "${msg.text.slice(0, 80)}${msg.text.length > 80 ? '...' : ''}"`);
+
+                        // Stop recognition while AI speaks
+                        if (recognitionRef.current) {
+                            try { recognitionRef.current.stop(); } catch {}
                         }
+
+                        speakText(msg.text, msg.language || 'en-IN');
+
+                    } else if (msg.kind === 'AudioData') {
+                        addLog('🔊 Received audio chunk (Azure TTS)');
                     } else if (msg.kind === 'StopAudio') {
-                        addLog('⏹️ [System] Playback stopped (barge-in)');
+                        addLog('⏹️ Playback stop signal');
                     } else {
-                        addLog(`📩 [System] ${JSON.stringify(msg).substring(0, 100)}`);
+                        addLog(`📩 ${JSON.stringify(msg).substring(0, 80)}`);
                     }
                 } catch {
-                    addLog('🔊 [TTS] Received binary audio chunk');
+                    addLog('📩 Received binary data');
                 }
             };
 
             ws.onerror = () => {
                 setStatus('error');
-                addLog(`❌ WebSocket error! Is backend running at ${import.meta.env.VITE_WS_URL || 'localhost:3001'}?`);
-                stopDemoCall(false);
+                addLog(`❌ WebSocket error! Is backend running?`);
+                stopDemoCall();
             };
 
             ws.onclose = () => {
-                setStatus(prev => prev === 'error' ? 'error' : 'completed');
-                addLog('📞 Call disconnected');
-                stopDemoCall(false);
+                if (status !== 'error') setStatus('completed');
+                addLog('📞 Disconnected');
             };
 
-            // Auto-stop after 60 seconds
+            // Auto-stop after 120 seconds
             setTimeout(() => {
                 if (wsRef.current?.readyState === WebSocket.OPEN) {
-                    addLog('⏱️ 60 seconds elapsed. Ending call.');
-                    stopDemoCall(true);
+                    addLog('⏱️ Session timeout. Ending call.');
+                    stopDemoCall();
                 }
-            }, 60000);
+            }, 120000);
 
-        } catch (error) {
+        } catch {
             setStatus('error');
-            addLog('❌ Failed to create WebSocket connection');
-            console.error(error);
+            addLog('❌ Failed to connect');
         }
     };
 
-    const stopDemoCall = (forceClose = true) => {
-        // Stop audio processing
-        if (processorRef.current) {
-            processorRef.current.disconnect();
-            processorRef.current = null;
-        }
-        if (sourceRef.current) {
-            sourceRef.current.disconnect();
-            sourceRef.current = null;
+    const stopDemoCall = () => {
+        // Stop recognition
+        if (recognitionRef.current) {
+            try { recognitionRef.current.stop(); } catch {}
+            recognitionRef.current = null;
         }
 
-        // Stop microphone
+        // Stop speech
+        if (window.speechSynthesis) {
+            window.speechSynthesis.cancel();
+        }
+
+        // Stop volume meter
+        if (animFrameRef.current) {
+            cancelAnimationFrame(animFrameRef.current);
+            animFrameRef.current = null;
+        }
+
+        // Stop mic
         if (mediaStreamRef.current) {
             mediaStreamRef.current.getTracks().forEach(t => t.stop());
             mediaStreamRef.current = null;
         }
 
-        // Close AudioContexts
+        // Close audio context
         if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
             audioCtxRef.current.close().catch(() => {});
             audioCtxRef.current = null;
         }
-        if (playbackCtxRef.current && playbackCtxRef.current.state !== 'closed') {
-            playbackCtxRef.current.close().catch(() => {});
-            playbackCtxRef.current = null;
+
+        // Close WS
+        if (wsRef.current) {
+            try { wsRef.current.close(1000); } catch {}
+            wsRef.current = null;
         }
 
-        // Close WebSocket
-        if (wsRef.current && forceClose) {
-            wsRef.current.close(1000, 'Demo stopped by user');
-        }
-        wsRef.current = null;
-        silenceStartRef.current = null;
         setVolume(0);
-        setIsSpeaking(false);
-        setStatus(prev => prev === 'active' || prev === 'connecting' ? 'completed' : prev);
+        setStatus(prev => (prev === 'error' ? 'error' : 'completed'));
     };
 
-    // Volume bar width (0-100%)
-    const volumeWidth = Math.min(volume * 5000, 100);
+    const volumeWidth = Math.min(volume * 200, 100);
+    const isActive = status === 'listening' || status === 'processing' || status === 'speaking';
+
+    const statusLabel: Record<string, string> = {
+        idle: 'Ready',
+        connecting: 'Connecting...',
+        listening: '🎤 Listening — speak your question',
+        processing: '⏳ AI is thinking...',
+        speaking: '🔊 AI is responding...',
+        completed: 'Call ended',
+        error: 'Error',
+    };
 
     return (
-        <div className="glass-panel p-6 rounded-2xl border border-primary/20 relative overflow-hidden">
+        <div className={`glass-panel p-6 rounded-2xl relative overflow-hidden transition-all duration-300 ${
+            isModern ? 'bg-white border-indigo-100 shadow-sm' : 'border-primary/20'
+        }`}>
             <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">
-                    <span className="material-symbols-outlined text-primary">campaign</span>
-                    <h3 className="text-xl font-bold">Live Voice Demo</h3>
+                    <span className={`material-symbols-outlined ${isModern ? 'text-indigo-600' : 'text-primary'}`}>campaign</span>
+                    <h3 className={`text-xl font-bold ${isModern ? 'text-slate-800' : 'text-slate-100'}`}>Live Voice Demo</h3>
                 </div>
                 <div className="flex gap-2">
-                    {status === 'idle' || status === 'completed' || status === 'error' ? (
+                    {!isActive && status !== 'connecting' ? (
                         <button
                             onClick={startDemoCall}
-                            className="px-4 py-2 bg-primary text-background-dark font-bold rounded-lg hover:bg-primary/90 transition-all flex items-center gap-2"
+                            className={`px-4 py-2 font-bold rounded-lg transition-all flex items-center gap-2 ${
+                                isModern 
+                                ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg' 
+                                : 'bg-primary text-background-dark hover:bg-primary/90'
+                            }`}
                         >
                             <span className="material-symbols-outlined text-sm">mic</span>
                             Start Voice Call
                         </button>
                     ) : (
                         <button
-                            onClick={() => stopDemoCall(true)}
-                            className="px-4 py-2 bg-red-500/20 text-red-500 border border-red-500/50 font-bold rounded-lg hover:bg-red-500/30 transition-all flex items-center gap-2"
+                            onClick={stopDemoCall}
+                            className={`px-4 py-2 font-bold rounded-lg transition-all flex items-center gap-2 ${
+                                isModern 
+                                ? 'bg-red-50 text-red-600 border border-red-200 hover:bg-red-100' 
+                                : 'bg-red-500/20 text-red-500 border border-red-500/50 hover:bg-red-500/30'
+                            }`}
                         >
                             <span className="material-symbols-outlined text-sm">call_end</span>
                             End Call
@@ -321,62 +393,79 @@ export default function DemoCallTracker({ scenario }: DemoCallTrackerProps) {
                 </div>
             </div>
 
-            <p className="text-sm text-slate-400 mb-4">
-                Speak into your microphone to interact with the AI. The system detects
-                <strong> ~3 seconds of silence</strong> as the end of your question, then responds with audio.
-            </p>
+            {/* Status Bar */}
+            <div className={`text-sm font-bold mb-4 px-3 py-2 rounded-lg transition-colors ${
+                status === 'listening' ? (isModern ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-green-500/10 text-green-400') :
+                status === 'processing' ? (isModern ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-yellow-500/10 text-yellow-400') :
+                status === 'speaking' ? (isModern ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-blue-500/10 text-blue-400') :
+                status === 'error' ? (isModern ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-red-500/10 text-red-400') :
+                (isModern ? 'bg-slate-100 text-slate-500 border border-slate-200' : 'bg-slate-800/50 text-slate-400')
+            }`}>
+                {statusLabel[status]}
+            </div>
 
-            {/* ── Volume / Speaking Indicator ── */}
-            {status === 'active' && (
+            {/* Volume Meter */}
+            {isActive && (
                 <div className="mb-4">
-                    <div className="flex items-center gap-2 mb-1">
-                        <span className={`h-2 w-2 rounded-full ${isSpeaking ? 'bg-green-400 animate-pulse' : 'bg-slate-600'}`}></span>
-                        <span className="text-[10px] uppercase font-bold text-slate-500">
-                            {isSpeaking ? '🎤 Listening...' : '🤫 Silence — waiting for speech...'}
-                        </span>
-                    </div>
-                    <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                    <div className={`h-2 rounded-full overflow-hidden ${isModern ? 'bg-slate-200' : 'bg-slate-800'}`}>
                         <div
-                            className="h-full bg-gradient-to-r from-green-500 to-primary transition-all duration-100 rounded-full"
+                            className={`h-full rounded-full transition-all duration-75 ${
+                                status === 'speaking' 
+                                ? (isModern ? 'bg-gradient-to-r from-blue-500 to-indigo-500' : 'bg-gradient-to-r from-blue-500 to-cyan-400') 
+                                : (isModern ? 'bg-gradient-to-r from-green-500 to-emerald-500' : 'bg-gradient-to-r from-green-500 to-primary')
+                            }`}
                             style={{ width: `${volumeWidth}%` }}
                         ></div>
                     </div>
                 </div>
             )}
 
-            <div className="grid grid-cols-2 gap-4 mb-6">
-                <div className="bg-background-dark/50 p-4 rounded-xl border border-primary/10">
-                    <p className="text-[10px] uppercase font-bold text-slate-500">Audio Packets Sent</p>
-                    <p className="text-2xl font-black text-primary">{packetsSent}</p>
-                    <p className="text-[10px] text-slate-600">Live microphone PCM</p>
+            {/* Transcript & Response */}
+            {(transcript || aiResponse) && (
+                <div className="mb-4 space-y-2">
+                    {transcript && (
+                        <div className={`rounded-lg p-3 ${isModern ? 'bg-slate-50 border border-slate-200' : 'bg-primary/5 border border-primary/20'}`}>
+                            <p className={`text-[10px] uppercase font-bold mb-1 ${isModern ? 'text-indigo-600' : 'text-primary'}`}>Your Question</p>
+                            <p className={`text-sm ${isModern ? 'text-slate-700' : 'text-slate-200'}`}>"{transcript}"</p>
+                        </div>
+                    )}
+                    {aiResponse && (
+                        <div className={`rounded-lg p-3 ${isModern ? 'bg-teal-50 border border-teal-100' : 'bg-accent-teal/5 border border-accent-teal/20'}`}>
+                            <p className={`text-[10px] uppercase font-bold mb-1 ${isModern ? 'text-teal-700' : 'text-accent-teal'}`}>AI Response</p>
+                            <p className={`text-sm ${isModern ? 'text-slate-700' : 'text-slate-200'}`}>{aiResponse.slice(0, 200)}{aiResponse.length > 200 ? '...' : ''}</p>
+                        </div>
+                    )}
                 </div>
-                <div className="bg-background-dark/50 p-4 rounded-xl border border-accent-teal/10">
-                    <p className="text-[10px] uppercase font-bold text-slate-500">TTS Chunks Received</p>
-                    <p className="text-2xl font-black text-accent-teal">{messagesReceived}</p>
-                    <p className="text-[10px] text-slate-600">AI audio response</p>
-                </div>
-            </div>
+            )}
 
-            <div className="bg-black/90 p-4 rounded-xl border border-slate-800 font-mono text-[11px] h-48 overflow-y-auto space-y-2">
+            {/* Log Console */}
+            <div className={`p-4 rounded-xl font-mono text-[11px] h-48 overflow-y-auto space-y-2 border ${
+                isModern ? 'bg-slate-50 border-slate-200' : 'bg-black/90 border-slate-800'
+            }`}>
                 {logs.length === 0 ? (
-                    <p className="text-slate-600 italic">Click "Start Voice Call" to begin a live AI conversation...</p>
+                    <p className={`${isModern ? 'text-slate-400' : 'text-slate-600'} italic`}>Click "Start Voice Call" to begin a live AI conversation...</p>
                 ) : (
                     logs.map((log, i) => (
                         <p key={i} className={
-                            log.includes('❌') ? 'text-red-400' :
-                                log.includes('✅') || log.includes('🔊') ? 'text-accent-teal' :
-                                    log.includes('🎤') ? 'text-green-400' :
-                                        log.includes('📤') ? 'text-primary' :
-                                            'text-slate-300'
+                            log.includes('❌') || log.includes('⚠️') ? (isModern ? 'text-red-600' : 'text-red-400') :
+                                log.includes('✅') || log.includes('🔊') ? (isModern ? 'text-teal-600' : 'text-accent-teal') :
+                                    log.includes('🎤') ? (isModern ? 'text-green-600' : 'text-green-400') :
+                                        log.includes('🤖') ? (isModern ? 'text-blue-600' : 'text-blue-400') :
+                                            log.includes('⏳') ? (isModern ? 'text-amber-600' : 'text-yellow-400') :
+                                                (isModern ? 'text-slate-600' : 'text-slate-300')
                         }>{log}</p>
                     ))
                 )}
                 <div ref={logsEndRef} />
             </div>
 
-            {(status === 'active' || status === 'connecting') && (
-                <div className="absolute top-0 left-0 w-full h-1 bg-primary/20">
-                    <div className="h-full bg-primary animate-pulse w-full"></div>
+            {isActive && (
+                <div className={`absolute top-0 left-0 w-full h-1 ${isModern ? 'bg-indigo-100' : 'bg-primary/20'}`}>
+                    <div className={`h-full animate-pulse w-full ${
+                        status === 'speaking' ? 'bg-blue-500' :
+                        status === 'processing' ? (isModern ? 'bg-amber-500' : 'bg-yellow-500') :
+                        'bg-green-500'
+                    }`}></div>
                 </div>
             )}
         </div>

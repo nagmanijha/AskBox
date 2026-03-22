@@ -13,12 +13,12 @@ export interface PaginatedResponse<T> {
     pageSize: number;
     totalPages: number;
 }
-/** Admin user */
-export interface AdminUser {
+/** User */
+export interface User {
     id: string;
     email: string;
     name: string;
-    role: 'admin' | 'viewer';
+    role: 'admin' | 'user';
     createdAt: Date;
     updatedAt: Date;
 }
@@ -26,7 +26,7 @@ export interface AdminUser {
 export interface JwtPayload {
     userId: string;
     email: string;
-    role: string;
+    role: 'admin' | 'user';
 }
 /** Call log from Cosmos DB */
 export interface CallLog {

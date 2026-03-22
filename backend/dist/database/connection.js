@@ -15,7 +15,7 @@ exports.pool = new pg_1.Pool({
 exports.pool.on('error', (err) => {
     logger_1.logger.error('Unexpected PostgreSQL pool error', { error: err.message });
 });
-/** Test database connectivity */
+/** Test database connectivity — non-fatal in dev mode */
 async function testConnection() {
     try {
         const client = await exports.pool.connect();
@@ -24,8 +24,8 @@ async function testConnection() {
         logger_1.logger.info('PostgreSQL connection established successfully');
     }
     catch (error) {
-        logger_1.logger.error('Failed to connect to PostgreSQL', { error });
-        throw error;
+        logger_1.logger.warn('PostgreSQL not available — running in mock/limited mode. Knowledge base, auth and settings endpoints will not work until Postgres is running.', { error });
+        // Do NOT throw — let the server start so the voice pipeline and mock APIs still work
     }
 }
 //# sourceMappingURL=connection.js.map

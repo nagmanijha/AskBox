@@ -19,6 +19,7 @@ export interface User {
     id: string;
     email: string;
     name: string;
+    role: 'admin' | 'user';
     createdAt: string;
     updatedAt: string;
 }
@@ -93,6 +94,7 @@ export interface LanguageDistribution {
     language: string;
     count: number;
     percentage: number;
+    growth?: number;
 }
 
 export interface RealtimeMetrics {

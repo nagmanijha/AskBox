@@ -1,16 +1,15 @@
 /**
- * Azure Blob Storage client wrapper.
- * Used for uploading knowledge base documents.
- *
- * NOTE: Replace placeholder credentials with real Azure Storage credentials.
+ * Local File Storage client wrapper.
+ * Replaces Azure Blob Storage for knowledge base document uploads.
  */
 declare class StorageService {
-    private containerClient;
-    /** Initialize Blob Storage client. Call once at startup. */
+    private uploadDir;
+    constructor();
+    /** Initialize Local Storage. Call once at startup. */
     initialize(): Promise<void>;
-    /** Upload a file to blob storage and return the URL */
+    /** Save a file to local disk and return the URL */
     uploadFile(filename: string, buffer: Buffer, contentType: string): Promise<string | null>;
-    /** Delete a file from blob storage */
+    /** Delete a file from local storage */
     deleteFile(filename: string): Promise<void>;
     isConnected(): boolean;
 }

@@ -1,9 +1,13 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ragService = void 0;
 const logger_1 = require("../config/logger");
+const fuse_js_1 = __importDefault(require("fuse.js"));
+const connection_1 = require("../database/connection");
 const redisClient_1 = require("./redisClient");
-const searchClient_1 = require("./searchClient");
 /**
  * Phase 2 — Checkpoint 4 & 5: RAG Retrieval & Prompt Assembly
  *
@@ -103,43 +107,48 @@ class RAGService {
         };
     }
     /**
-     * Query Azure AI Search with a strict timeout.
+     * Query PostgreSQL + Fuse.js with a strict timeout.
      * If the search takes too long, we abort and fall back to generic LLM response
      * rather than keeping the caller waiting in silence.
      */
     async searchWithTimeout(query, timeoutMs) {
-        const searchClient = searchClient_1.searchService.getClient();
-        if (!searchClient) {
-            // AI Search not configured — return mock context for development
-            return this.getMockContext(query);
-        }
-        return new Promise((resolve) => {
+        return new Promise(async (resolve) => {
             const timer = setTimeout(() => {
                 logger_1.logger.warn(`[RAG] Search timed out after ${timeoutMs}ms — falling back`);
                 resolve(null);
             }, timeoutMs);
-            searchClient.search(query, {
-                top: 3,
-                queryType: 'semantic',
-                semanticSearchOptions: {
-                    configurationName: 'default',
-                },
-            })
-                .then(async (results) => {
-                clearTimeout(timer);
-                const documents = [];
-                for await (const result of results.results) {
-                    if (result.document?.content) {
-                        documents.push(result.document.content);
-                    }
+            try {
+                // Fetch all indexed documents from DB
+                // In production, you'd cache this or use pgvector. For this demo, we fetch and use Fuse.
+                const result = await connection_1.pool.query('SELECT original_name, metadata->>\'content\' as content FROM knowledge_base_documents WHERE indexing_status = $1', ['indexed']);
+                if (result.rowCount === 0) {
+                    clearTimeout(timer);
+                    resolve(this.getMockContext(query));
+                    return;
                 }
-                resolve(documents.length > 0 ? documents.join('\n\n---\n\n') : null);
-            })
-                .catch((err) => {
+                // Setup Fuse.js for fuzzy retrieval
+                const documents = result.rows.filter(r => r.content);
+                const fuse = new fuse_js_1.default(documents, {
+                    keys: ['content', 'original_name'],
+                    includeScore: true,
+                    threshold: 0.8, // Allow fuzzy matches
+                    ignoreLocation: true
+                });
+                const searchResults = fuse.search(query, { limit: 3 });
+                clearTimeout(timer);
+                if (searchResults.length > 0) {
+                    const combined = searchResults.map((r) => r.item.content).join('\n\n---\n\n');
+                    resolve(combined);
+                }
+                else {
+                    resolve(this.getMockContext(query));
+                }
+            }
+            catch (err) {
                 clearTimeout(timer);
                 logger_1.logger.error('[RAG] Search query execution failed', err);
-                resolve(null);
-            });
+                resolve(this.getMockContext(query));
+            }
         });
     }
     /**

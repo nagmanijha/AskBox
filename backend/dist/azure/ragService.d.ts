@@ -22,7 +22,7 @@ declare class RAGService {
      */
     private retrieveContext;
     /**
-     * Query Azure AI Search with a strict timeout.
+     * Query PostgreSQL + Fuse.js with a strict timeout.
      * If the search takes too long, we abort and fall back to generic LLM response
      * rather than keeping the caller waiting in silence.
      */

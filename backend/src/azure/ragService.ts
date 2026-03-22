@@ -1,7 +1,8 @@
 import { logger } from '../config/logger';
 import { config } from '../config';
+import Fuse from 'fuse.js';
+import { pool } from '../database/connection';
 import { redisService } from './redisClient';
-import { searchService } from './searchClient';
 import type { ConversationTurn } from './callSession';
 
 /**
@@ -20,17 +21,20 @@ import type { ConversationTurn } from './callSession';
  */
 
 /** Maximum time to wait for RAG retrieval before falling back */
-const RAG_TIMEOUT_MS = 3000;
+const RAG_TIMEOUT_MS = 10000; // Increased for reliability in local dev
 
 /** Default system prompt template */
 const SYSTEM_PROMPT_TEMPLATE = `You are AskBox, an educational and government services voice assistant for rural communities in India.
 
 CRITICAL INSTRUCTIONS:
-- You MUST reply in {{LANGUAGE}}.
+- You MUST reply EXCLUSIVELY in {{LANGUAGE}}. 
+- Even if the provided context below is in English, you MUST TRANSLATE it into {{LANGUAGE}}.
+- Do NOT use English words or characters unless absolutely necessary (e.g., technical terms without translation).
 - Keep responses concise (2-3 sentences max) — this is a phone call, not a chat.
 - Use simple words suitable for students and rural citizens.
 - If you reference a government scheme, include the scheme name and eligibility.
 - If you don't know the answer, say so honestly in the caller's language.
+- Do NOT use any Markdown (no **, no #, no lists). Use plain text sentences only.
 
 CONTEXT FROM KNOWLEDGE BASE:
 {{RAG_CONTEXT}}`;
@@ -83,7 +87,10 @@ class RAGService {
         }
 
         // Add the current query
-        messages.push({ role: 'user', content: query });
+        messages.push({ 
+            role: 'user', 
+            content: `${query}\n\n[CRITICAL INSTRUCTION: You MUST answer entirely in ${languageName} script and language. Translate the context into ${languageName}. DO NOT reply in English.]` 
+        });
 
         return {
             messages,
@@ -130,48 +137,51 @@ class RAGService {
     }
 
     /**
-     * Query Azure AI Search with a strict timeout.
+     * Query PostgreSQL + Fuse.js with a strict timeout.
      * If the search takes too long, we abort and fall back to generic LLM response
      * rather than keeping the caller waiting in silence.
      */
     private async searchWithTimeout(query: string, timeoutMs: number): Promise<string | null> {
-        const searchClient = searchService.getClient();
-
-        if (!searchClient) {
-            // AI Search not configured — return mock context for development
-            return this.getMockContext(query);
-        }
-
-        return new Promise<string | null>((resolve) => {
+        return new Promise<string | null>(async (resolve) => {
             const timer = setTimeout(() => {
                 logger.warn(`[RAG] Search timed out after ${timeoutMs}ms — falling back`);
                 resolve(null);
             }, timeoutMs);
 
-            searchClient.search(query, {
-                top: 3,
-                queryType: 'semantic',
-                semanticSearchOptions: {
-                    configurationName: 'default',
-                },
-            })
-                .then(async (results: any) => {
+            try {
+                // Fetch all indexed documents from DB
+                // In production, you'd cache this or use pgvector. For this demo, we fetch and use Fuse.
+                const result = await pool.query('SELECT original_name, metadata->>\'content\' as content FROM knowledge_base_documents WHERE indexing_status = $1', ['indexed']);
+                
+                if (result.rowCount === 0) {
                     clearTimeout(timer);
-                    const documents: string[] = [];
+                    resolve(this.getMockContext(query));
+                    return;
+                }
 
-                    for await (const result of results.results) {
-                        if (result.document?.content) {
-                            documents.push(result.document.content);
-                        }
-                    }
-
-                    resolve(documents.length > 0 ? documents.join('\n\n---\n\n') : null);
-                })
-                .catch((err: any) => {
-                    clearTimeout(timer);
-                    logger.error('[RAG] Search query execution failed', err);
-                    resolve(null);
+                // Setup Fuse.js for fuzzy retrieval
+                const documents = result.rows.filter(r => r.content);
+                const fuse = new Fuse(documents, {
+                    keys: ['content', 'original_name'],
+                    includeScore: true,
+                    threshold: 0.8, // Allow fuzzy matches
+                    ignoreLocation: true
                 });
+
+                const searchResults = fuse.search(query, { limit: 3 });
+                clearTimeout(timer);
+
+                if (searchResults.length > 0) {
+                    const combined = searchResults.map((r: any) => r.item.content).join('\n\n---\n\n');
+                    resolve(combined);
+                } else {
+                    resolve(this.getMockContext(query));
+                }
+            } catch (err: any) {
+                clearTimeout(timer);
+                logger.error('[RAG] Search query execution failed', err);
+                resolve(this.getMockContext(query));
+            }
         });
     }
 
@@ -207,18 +217,24 @@ class RAGService {
     /**
      * Map language codes to human-readable names for the system prompt.
      */
-    private getLanguageName(langCode: string): string {
-        const map: Record<string, string> = {
-            'en-IN': 'English',
-            'hi-IN': 'Hindi',
-            'ta-IN': 'Tamil',
-            'te-IN': 'Telugu',
-            'kn-IN': 'Kannada',
-            'ml-IN': 'Malayalam',
-            'bn-IN': 'Bengali',
-            'mr-IN': 'Marathi',
-        };
-        return map[langCode] || 'English';
+    private getLanguageName(code: string): string {
+        try {
+            const lang = code.split('-')[0].toLowerCase();
+            const map: Record<string, string> = {
+                'hi': 'Hindi',
+                'kn': 'Kannada',
+                'te': 'Telugu',
+                'ta': 'Tamil',
+                'mr': 'Marathi',
+                'gu': 'Gujarati',
+                'bn': 'Bengali',
+                'ml': 'Malayalam',
+                'en': 'English'
+            };
+            return map[lang] || 'the local language';
+        } catch (e) {
+            return 'the local language';
+        }
     }
 }
 

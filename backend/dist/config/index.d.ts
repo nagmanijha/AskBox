@@ -20,10 +20,15 @@ export declare const config: {
         readonly key: string;
         readonly indexName: string;
     };
-    readonly openai: {
+    readonly gemini: {
+        readonly apiKey: string;
+        readonly model: string;
+    };
+    readonly azureOpenAI: {
+        readonly apiKey: string;
         readonly endpoint: string;
-        readonly key: string;
         readonly deployment: string;
+        readonly apiVersion: string;
     };
     readonly storage: {
         readonly connectionString: string;

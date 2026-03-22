@@ -1,15 +1,15 @@
 import { logger } from '../config/logger';
-import { cosmosService } from './cosmosClient';
+import { pool } from '../database/connection';
 import type { CallSession } from './callSession';
 
 /**
- * Phase 4 — Checkpoint 10: Non-Blocking Telemetry (Cosmos DB)
+ * Phase 4 — Checkpoint 10: Non-Blocking Telemetry (PostgreSQL)
  *
- * Asynchronous Cosmos DB logger for impact metrics.
+ * Asynchronous PostgreSQL logger for impact metrics.
  *
  * KEY DESIGN: Uses setImmediate() + fire-and-forget promises so that
  * telemetry logging NEVER blocks the main audio event loop. The caller
- * doesn't wait for the Cosmos DB write to complete.
+ * doesn't wait for the PostgreSQL write to complete.
  *
  * Metrics logged:
  * - Call duration and turn count
@@ -121,9 +121,9 @@ class TelemetryService {
     }
 
     /**
-     * CORE: Non-blocking async write to Cosmos DB.
+     * CORE: Non-blocking async write to PostgreSQL.
      *
-     * Uses setImmediate() to defer the Cosmos write to the next iteration
+     * Uses setImmediate() to defer the Postgres write to the next iteration
      * of the Node.js event loop, ensuring the audio processing thread
      * (AMD CPU-bound work) is freed immediately.
      *
@@ -140,9 +140,9 @@ class TelemetryService {
 
         // setImmediate pushes this to the NEXT event loop iteration
         setImmediate(() => {
-            this.writeToCosmos(event)
+            this.writeToPostgres(event)
                 .catch(err => {
-                    logger.error('[Telemetry] Cosmos DB write failed (non-blocking)', {
+                    logger.error('[Telemetry] PostgreSQL write failed (non-blocking)', {
                         eventType: event.type,
                         sessionId: event.sessionId,
                         error: err?.message || String(err),
@@ -155,23 +155,19 @@ class TelemetryService {
     }
 
     /**
-     * Actual Cosmos DB write operation.
-     * Falls back to structured logging if Cosmos is not available.
+     * Actual PostgreSQL write operation.
+     * Falls back to structured logging if DB is unavailable.
      */
-    private async writeToCosmos(event: TelemetryEvent): Promise<void> {
-        const container = cosmosService.getContainer();
-
-        if (container) {
-            try {
-                await container.items.create({
-                    id: `${event.sessionId}-${event.type}-${Date.now()}`,
-                    partitionKey: event.callId,
-                    ...event,
-                });
-                return;
-            } catch (err) {
-                logger.error('[Telemetry] Cosmos write failed, logging to console', err);
-            }
+    private async writeToPostgres(event: TelemetryEvent): Promise<void> {
+        try {
+            await pool.query(
+                `INSERT INTO call_telemetry (session_id, call_id, event_type, timestamp, data)
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [event.sessionId, event.callId, event.type, event.timestamp, JSON.stringify(event.data)]
+            );
+            return;
+        } catch (err) {
+            logger.error('[Telemetry] PostgreSQL write failed, logging to console', err);
         }
 
         // Fallback: structured console log so metrics are still captured

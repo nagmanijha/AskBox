@@ -1,12 +1,12 @@
 import type { CallSession } from './callSession';
 /**
- * Phase 4 — Checkpoint 10: Non-Blocking Telemetry (Cosmos DB)
+ * Phase 4 — Checkpoint 10: Non-Blocking Telemetry (PostgreSQL)
  *
- * Asynchronous Cosmos DB logger for impact metrics.
+ * Asynchronous PostgreSQL logger for impact metrics.
  *
  * KEY DESIGN: Uses setImmediate() + fire-and-forget promises so that
  * telemetry logging NEVER blocks the main audio event loop. The caller
- * doesn't wait for the Cosmos DB write to complete.
+ * doesn't wait for the PostgreSQL write to complete.
  *
  * Metrics logged:
  * - Call duration and turn count
@@ -60,9 +60,9 @@ declare class TelemetryService {
      */
     logError(session: CallSession, error: any, context: string): void;
     /**
-     * CORE: Non-blocking async write to Cosmos DB.
+     * CORE: Non-blocking async write to PostgreSQL.
      *
-     * Uses setImmediate() to defer the Cosmos write to the next iteration
+     * Uses setImmediate() to defer the Postgres write to the next iteration
      * of the Node.js event loop, ensuring the audio processing thread
      * (AMD CPU-bound work) is freed immediately.
      *
@@ -70,10 +70,10 @@ declare class TelemetryService {
      */
     private writeAsync;
     /**
-     * Actual Cosmos DB write operation.
-     * Falls back to structured logging if Cosmos is not available.
+     * Actual PostgreSQL write operation.
+     * Falls back to structured logging if DB is unavailable.
      */
-    private writeToCosmos;
+    private writeToPostgres;
     /**
      * Get count of pending writes (used for health checks).
      */

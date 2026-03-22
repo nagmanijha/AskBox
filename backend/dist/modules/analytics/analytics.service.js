@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.analyticsService = exports.AnalyticsService = void 0;
-const cosmosClient_1 = require("../../azure/cosmosClient");
+const connection_1 = require("../../database/connection");
 const logger_1 = require("../../config/logger");
 /**
  * Analytics service — aggregates call data from Cosmos DB
@@ -11,34 +11,39 @@ const logger_1 = require("../../config/logger");
 class AnalyticsService {
     /** Get dashboard overview metrics */
     async getOverview() {
-        const container = cosmosClient_1.cosmosService.getContainer();
-        if (!container) {
-            return this.getMockOverview();
-        }
         try {
             const today = new Date().toISOString().split('T')[0];
             // Total calls today
-            const totalQuery = await container.items
-                .query({ query: `SELECT VALUE COUNT(1) FROM c WHERE c.startedAt >= @today`, parameters: [{ name: '@today', value: today }] })
-                .fetchAll();
+            const totalRes = await connection_1.pool.query(`SELECT COUNT(DISTINCT call_id) as total 
+                 FROM call_telemetry 
+                 WHERE timestamp >= $1`, [today]);
             // Average duration
-            const avgQuery = await container.items
-                .query({ query: `SELECT VALUE AVG(c.duration) FROM c WHERE c.startedAt >= @today`, parameters: [{ name: '@today', value: today }] })
-                .fetchAll();
+            const avgRes = await connection_1.pool.query(`SELECT AVG(CAST(data->>'durationSeconds' AS FLOAT)) as avg_duration 
+                 FROM call_telemetry 
+                 WHERE event_type = 'call_end' AND timestamp >= $1`, [today]);
             // Top languages
-            const langQuery = await container.items
-                .query({ query: `SELECT c.language, COUNT(1) as count FROM c GROUP BY c.language ORDER BY count DESC OFFSET 0 LIMIT 5` })
-                .fetchAll();
+            const langRes = await connection_1.pool.query(`SELECT data->>'language' as language, COUNT(*) as count 
+                 FROM call_telemetry 
+                 WHERE event_type = 'turn_complete' 
+                 GROUP BY data->>'language' 
+                 ORDER BY count DESC LIMIT 5`);
             // Top questions
-            const questionsQuery = await container.items
-                .query({ query: `SELECT VALUE c.transcriptSummary FROM c WHERE c.startedAt >= @today ORDER BY c.startedAt DESC OFFSET 0 LIMIT 50`, parameters: [{ name: '@today', value: today }] })
-                .fetchAll();
+            const questionsRes = await connection_1.pool.query(`SELECT data->>'userQuery' as question, COUNT(*) as count 
+                 FROM call_telemetry 
+                 WHERE event_type = 'turn_complete' AND timestamp >= $1 
+                 GROUP BY data->>'userQuery' 
+                 ORDER BY count DESC LIMIT 50`, [today]);
             return {
-                totalCallsToday: totalQuery.resources[0] || 0,
-                averageCallDuration: Math.round(avgQuery.resources[0] || 0),
-                activeCallsCount: Math.floor(Math.random() * 15) + 1,
-                topLanguages: langQuery.resources.map((r) => ({ language: r.language, count: r.count })),
-                topQuestions: this.extractTopQuestions(questionsQuery.resources),
+                totalCallsToday: parseInt(totalRes.rows[0]?.total || '0', 10),
+                averageCallDuration: Math.round(avgRes.rows[0]?.avg_duration || 0),
+                activeCallsCount: Math.floor(Math.random() * 15) + 1, // Still mocked for demo dashboard
+                topLanguages: langRes.rows
+                    .filter(r => r.language)
+                    .map(r => ({ language: r.language, count: parseInt(r.count, 10) })),
+                topQuestions: questionsRes.rows
+                    .filter(r => r.question)
+                    .map(r => ({ question: r.question, count: parseInt(r.count, 10) }))
+                    .slice(0, 5),
             };
         }
         catch (error) {
@@ -48,23 +53,18 @@ class AnalyticsService {
     }
     /** Get call volume over time (daily for last 30 days) */
     async getCallVolume(days = 30) {
-        const container = cosmosClient_1.cosmosService.getContainer();
-        if (!container) {
-            return this.getMockCallVolume(days);
-        }
         try {
             const startDate = new Date();
             startDate.setDate(startDate.getDate() - days);
-            const result = await container.items
-                .query({
-                query: `SELECT SUBSTRING(c.startedAt, 0, 10) as date, COUNT(1) as count
-                  FROM c WHERE c.startedAt >= @start
-                  GROUP BY SUBSTRING(c.startedAt, 0, 10)
-                  ORDER BY date ASC`,
-                parameters: [{ name: '@start', value: startDate.toISOString() }],
-            })
-                .fetchAll();
-            return result.resources;
+            const result = await connection_1.pool.query(`SELECT DATE(timestamp) as date, COUNT(DISTINCT call_id) as count
+                 FROM call_telemetry
+                 WHERE timestamp >= $1 AND event_type = 'call_start'
+                 GROUP BY DATE(timestamp)
+                 ORDER BY date ASC`, [startDate.toISOString()]);
+            return result.rows.map(r => ({
+                date: r.date instanceof Date ? r.date.toISOString().split('T')[0] : String(r.date),
+                count: parseInt(r.count, 10)
+            }));
         }
         catch (error) {
             logger_1.logger.error('Failed to get call volume', { error });
@@ -73,20 +73,23 @@ class AnalyticsService {
     }
     /** Get language distribution across all calls */
     async getLanguageDistribution() {
-        const container = cosmosClient_1.cosmosService.getContainer();
-        if (!container) {
-            return this.getMockLanguageDistribution();
-        }
         try {
-            const result = await container.items
-                .query({ query: `SELECT c.language, COUNT(1) as count FROM c GROUP BY c.language ORDER BY count DESC` })
-                .fetchAll();
-            const total = result.resources.reduce((sum, r) => sum + r.count, 0);
-            return result.resources.map((r) => ({
-                language: r.language,
-                count: r.count,
-                percentage: Math.round((r.count / total) * 100),
-            }));
+            const result = await connection_1.pool.query(`SELECT data->>'language' as language, COUNT(*) as count 
+                 FROM call_telemetry 
+                 WHERE event_type = 'turn_complete' 
+                 GROUP BY data->>'language' 
+                 ORDER BY count DESC`);
+            const totalRows = result.rows.reduce((sum, r) => sum + parseInt(r.count, 10), 0);
+            return result.rows
+                .filter(r => r.language)
+                .map(r => {
+                const count = parseInt(r.count, 10);
+                return {
+                    language: r.language,
+                    count,
+                    percentage: totalRows > 0 ? Math.round((count / totalRows) * 100) : 0,
+                };
+            });
         }
         catch (error) {
             logger_1.logger.error('Failed to get language distribution', { error });

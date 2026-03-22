@@ -37,6 +37,7 @@ async function runMigrations(): Promise<void> {
         file_size INTEGER NOT NULL,
         mime_type VARCHAR(50) NOT NULL,
         storage_url TEXT,
+        metadata JSONB DEFAULT '{}',
         indexing_status VARCHAR(20) NOT NULL DEFAULT 'pending'
           CHECK (indexing_status IN ('pending', 'indexing', 'indexed', 'failed')),
         uploaded_by UUID REFERENCES admin_users(id) ON DELETE SET NULL,
@@ -44,6 +45,9 @@ async function runMigrations(): Promise<void> {
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       )
     `);
+
+    // Ensure metadata column exists (CREATE TABLE IF NOT EXISTS won't add it to existing table)
+    await client.query('ALTER TABLE knowledge_base_documents ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT \'{}\'');
 
         // System configurations table
         await client.query(`
@@ -69,11 +73,28 @@ async function runMigrations(): Promise<void> {
       )
     `);
 
+        // Call Telemetry table (Replaces Cosmos DB)
+        await client.query(`
+      CREATE TABLE IF NOT EXISTS call_telemetry (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        session_id VARCHAR(255) NOT NULL,
+        call_id VARCHAR(255) NOT NULL,
+        event_type VARCHAR(50) NOT NULL,
+        timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        data JSONB NOT NULL DEFAULT '{}'
+      )
+    `);
+
         // Create indexes for performance
         await client.query('CREATE INDEX IF NOT EXISTS idx_kb_docs_status ON knowledge_base_documents(indexing_status)');
         await client.query('CREATE INDEX IF NOT EXISTS idx_sys_config_key ON system_configurations(key)');
         await client.query('CREATE INDEX IF NOT EXISTS idx_analytics_type ON analytics_cache(metric_type, period)');
         await client.query('CREATE INDEX IF NOT EXISTS idx_analytics_expires ON analytics_cache(expires_at)');
+        
+        // Indexes for the new telemetry table
+        await client.query('CREATE INDEX IF NOT EXISTS idx_telemetry_event_type ON call_telemetry(event_type)');
+        await client.query('CREATE INDEX IF NOT EXISTS idx_telemetry_timestamp ON call_telemetry(timestamp)');
+        await client.query('CREATE INDEX IF NOT EXISTS idx_telemetry_session_id ON call_telemetry(session_id)');
 
         // Seed default system configurations
         await client.query(`

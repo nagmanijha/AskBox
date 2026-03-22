@@ -35,7 +35,7 @@ export class AuthService {
     async login(email: string, password: string): Promise<{ user: User; token: string }> {
         try {
             const result = await pool.query(
-                'SELECT id, email, password_hash, name, created_at, updated_at FROM admin_users WHERE email = $1',
+                'SELECT id, email, password_hash, name, role, created_at, updated_at FROM admin_users WHERE email = $1',
                 [email]
             );
             if (result.rows.length === 0) {
@@ -48,7 +48,7 @@ export class AuthService {
             }
             const user = this.mapRow(row);
             const token = jwt.sign(
-                { userId: user.id, email: user.email },
+                { userId: user.id, email: user.email, role: user.role },
                 config.jwtSecret,
                 { expiresIn: config.jwtExpiresIn } as any
             );
@@ -65,7 +65,7 @@ export class AuthService {
     /** Get user by ID */
     async getUserById(id: string): Promise<User> {
         const result = await pool.query(
-            'SELECT id, email, name, created_at, updated_at FROM admin_users WHERE id = $1',
+            'SELECT id, email, name, role, created_at, updated_at FROM admin_users WHERE id = $1',
             [id]
         );
 
@@ -82,6 +82,7 @@ export class AuthService {
             id: row.id,
             email: row.email,
             name: row.name,
+            role: row.role || 'user',
             createdAt: row.created_at,
             updatedAt: row.updated_at,
         };

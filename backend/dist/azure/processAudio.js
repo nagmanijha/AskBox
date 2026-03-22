@@ -71,10 +71,21 @@ class AudioPipeline {
         ws.on('message', (data) => {
             try {
                 if (typeof data === 'string') {
-                    // ACS sends JSON-wrapped base64 audio packets
                     const payload = JSON.parse(data);
-                    if (payload.kind === 'AudioData') {
-                        // Decode base64 → raw PCM (16kHz, 16-bit, mono)
+                    if (payload.kind === 'Transcript' && payload.text) {
+                        // ── Browser SpeechRecognition sent a transcript ──
+                        // Bypass STT entirely — use the browser's transcription
+                        logger_1.logger.info(`[Pipeline:${callId}] 🌐 Browser transcript: "${payload.text}"`);
+                        this.onSpeechRecognized(session, {
+                            text: payload.text,
+                            language: payload.language || session.language || 'en-IN',
+                            confidence: 0.95,
+                        }).catch(err => {
+                            logger_1.logger.error(`[Pipeline:${callId}] Error handling browser transcript`, err);
+                        });
+                    }
+                    else if (payload.kind === 'AudioData') {
+                        // ACS / demo sends JSON-wrapped base64 audio packets
                         const pcmBuffer = Buffer.from(payload.audioData.data, 'base64');
                         session.pushAudio(pcmBuffer);
                         sttController.pushAudio(pcmBuffer);
@@ -156,8 +167,7 @@ class AudioPipeline {
         // Send stop signal to ACS to halt current audio playback
         session.sendStopAudio();
         // Abort the current LLM + TTS workflow
-        const controller = session.startNewTurn(); // Aborts previous turn
-        controller.abort(); // Also abort this new one (we just want to stop)
+        session.abortCurrentTurn();
         session.endTurn();
     }
     /**
@@ -173,7 +183,7 @@ class AudioPipeline {
             return;
         logger_1.logger.info(`[Pipeline:${session.sessionId}] 🎤 STT: "${result.text}" [lang=${result.language}, conf=${result.confidence}]`);
         // Update session language from Language ID
-        session.setLanguage(result.language);
+        session.language = result.language;
         // Add user's utterance to conversation history
         session.addTurn('user', result.text);
         // Save state to Redis
@@ -264,6 +274,19 @@ class AudioPipeline {
                 session.addTurn('assistant', assistantResponse.trim());
                 // Sync to Redis
                 redisClient_1.redisService.saveSessionState(session.callId, session.conversationHistory).catch(() => { });
+                // ── Send full text response for browser-based TTS ──
+                // This allows the frontend to use SpeechSynthesis (free, no Azure needed)
+                try {
+                    if (session.isAlive()) {
+                        session.ws.send(JSON.stringify({
+                            kind: 'TextResponse',
+                            text: assistantResponse.trim(),
+                            language: session.language,
+                        }));
+                        logger_1.logger.info(`[Pipeline:${session.sessionId}] 📝 Sent TextResponse for browser TTS`);
+                    }
+                }
+                catch { /* non-critical */ }
             }
             const totalTurnLatencyMs = Date.now() - turnStartTime;
             session.metrics.totalLatencyMs += totalTurnLatencyMs;
