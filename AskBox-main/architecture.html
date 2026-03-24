@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JanVani Production Architecture Map</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <!-- Panzoom for zoomable topology -->
+    <script src="https://unpkg.com/@panzoom/panzoom@4.5.1/dist/panzoom.min.js"></script>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" />
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        brand: { 400: '#818cf8', 500: '#6366f1', 600: '#4f46e5' },
+                        accent: { 400: '#2dd4bf', 500: '#14b8a6' },
+                        warn: { 400: '#fbbf24', 500: '#f59e0b' },
+                        danger: { 400: '#f87171', 500: '#ef4444' }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #020617;
+            color: #f8fafc;
+            background-image: 
+                radial-gradient(circle at 50% 0%, rgba(99, 102, 241, 0.08) 0%, transparent 60%),
+                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 100% 100%, 30px 30px, 30px 30px;
+            background-attachment: fixed;
+            overflow-x: hidden;
+        }
+
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .layer-box {
+            background: rgba(2, 6, 23, 0.4);
+            border: 1px dashed rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            position: relative;
+        }
+        
+        .node-card {
+            background: #0f172a;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            transition: all 0.2s;
+            cursor: crosshair;
+            position: relative;
+        }
+        
+        .node-card:hover {
+            border-color: rgba(99, 102, 241, 0.8);
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.2);
+            transform: translateY(-2px);
+            z-index: 20;
+        }
+
+        .node-badge {
+            position: absolute;
+            top: -6px;
+            right: -6px;
+            font-size: 8px;
+            padding: 2px 4px;
+            border-radius: 4px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            font-family: monospace;
+            z-index: 10;
+        }
+
+        .anim-dash {
+            stroke-dasharray: 4 4;
+            animation: dash-flow 1s linear infinite;
+        }
+        @keyframes dash-flow {
+            to { stroke-dashoffset: -8; }
+        }
+
+        /* SVG overlay for connectors */
+        #svg-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+        .terminal-text { text-shadow: 0 0 8px rgba(45, 212, 191, 0.4); }
+        .glitch-text { animation: glitch 2s infinite; }
+        
+        @keyframes glitch {
+            0%, 100% { opacity: 1; transform: translateX(0); }
+            5% { transform: translateX(-1px); }
+            10% { transform: translateX(1px); opacity: 0.8; }
+            15% { transform: translateX(0); opacity: 1; }
+        }
+        
+        .jitter-val { transition: color 0.1s; }
+    </style>
+</head>
+<body class="min-h-screen text-slate-200">
+
+    <!-- Global Header -->
+    <header class="fixed top-0 left-0 right-0 z-50 glass-panel border-b-0 flex items-center justify-between px-6 h-14">
+        <div class="flex items-center gap-4">
+            <span class="material-symbols-outlined text-brand-500">memory</span>
+            <h1 class="font-bold text-sm tracking-widest uppercase">JanVani Distributed System Ops</h1>
+            <span class="px-2 py-0.5 rounded bg-brand-500/20 text-brand-400 text-[10px] font-mono border border-brand-500/30">v4.5.1-prod</span>
+        </div>
+        <div class="flex items-center gap-6 font-mono text-[10px]">
+            <div class="flex items-center gap-2 text-emerald-400">
+                <div class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div> AP-SOUTH-1 ACTIVE
+            </div>
+            <div class="flex items-center gap-4 text-slate-400">
+                <span>RPS: <span class="text-white jitter-val" id="global-rps">4,210</span></span>
+                <span>P99: <span class="text-white jitter-val" id="global-lat">2.41s</span></span>
+                <span>KAFKA_LAG: <span class="text-emerald-400 jitter-val" id="global-lag">12ms</span></span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Side Event Stream (Terminal) -->
+    <aside class="fixed right-4 bottom-4 w-80 glass-panel rounded-lg z-40 flex flex-col hidden xl:flex border-slate-700/50" style="height: calc(100vh - 80px);">
+        <div class="p-3 border-b border-white/5 flex justify-between items-center bg-slate-900/50 rounded-t-lg">
+            <span class="text-[10px] font-mono font-bold text-slate-400 flex items-center gap-2">
+                <span class="material-symbols-outlined text-[14px]">terminal</span> LIVE_STREAM (stdout)
+            </span>
+            <span class="flex gap-1">
+                <span class="w-2 h-2 rounded-full bg-red-500/50"></span>
+                <span class="w-2 h-2 rounded-full bg-amber-500/50"></span>
+                <span class="w-2 h-2 rounded-full bg-emerald-500/50"></span>
+            </span>
+        </div>
+        <div class="flex-1 overflow-y-auto p-4 font-mono text-[9px] space-y-2 leading-relaxed" id="event-stream">
+            <!-- Populated via JS -->
+        </div>
+    </aside>
+
+    <main class="pt-16 pb-24 xl:pr-[340px] px-6 max-w-[1600px] mx-auto space-y-20">
+
+        <!-- SECTION 1: INTERACTIVE TOPOLOGY (PAN/ZOOM) -->
+        <section class="relative">
+            <div class="flex justify-between items-end mb-4">
+                <div>
+                    <h2 class="text-2xl font-black mb-1">Architecture Topology</h2>
+                    <p class="text-sm text-slate-400">Distributed multi-region deployment map. Scroll to zoom, drag to pan.</p>
+                </div>
+                <div class="flex gap-2">
+                    <button class="p-1.5 rounded bg-slate-800 text-slate-400 hover:text-white" onclick="pz.zoomIn()"><span class="material-symbols-outlined text-sm">zoom_in</span></button>
+                    <button class="p-1.5 rounded bg-slate-800 text-slate-400 hover:text-white" onclick="pz.zoomOut()"><span class="material-symbols-outlined text-sm">zoom_out</span></button>
+                    <button class="p-1.5 rounded bg-slate-800 text-slate-400 hover:text-white" onclick="pz.reset()"><span class="material-symbols-outlined text-sm">fit_screen</span></button>
+                </div>
+            </div>
+
+            <!-- Topology Viewport -->
+            <div class="glass-panel rounded-xl h-[700px] overflow-hidden border border-slate-700/50 relative cursor-grab active:cursor-grabbing" id="topology-viewport">
+                <!-- Panzoom Canvas -->
+                <div id="topology-canvas" class="w-[1800px] h-[1200px] relative p-12 origin-center" style="transform: scale(0.65) translate(-10%, -15%);">
+                    
+                    <svg id="svg-layer">
+                        <defs>
+                            <linearGradient id="flowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stop-color="#4f46e5" stop-opacity="0.2" />
+                                <stop offset="50%" stop-color="#2dd4bf" stop-opacity="0.8" />
+                                <stop offset="100%" stop-color="#4f46e5" stop-opacity="0.2" />
+                            </linearGradient>
+                            <!-- Arrow markers -->
+                            <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+                                <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f46e5" opacity="0.6"/>
+                            </marker>
+                        </defs>
+                        <!-- Paths drawn via JS based on node positions -->
+                    </svg>
+
+                    <div class="grid grid-cols-5 gap-8 h-full relative z-10">
+                        
+                        <!-- COLUMN 1: Edge & Ingress -->
+                        <div class="layer-box p-6 space-y-8 flex flex-col justify-center">
+                            <h3 class="absolute top-4 left-4 text-[10px] font-mono text-slate-500 uppercase">Edge Layer</h3>
+                            
+                            <div class="node-card text-center sys-node" id="node-telecom" data-type="ingress">
+                                <span class="node-badge text-emerald-400 border-emerald-500/30">Healthy</span>
+                                <span class="material-symbols-outlined text-3xl text-slate-400">cell_tower</span>
+                                <h4 class="font-bold text-xs mt-2">SIP Trunk (Twilio)</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">WebRTC Bridge</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-emerald-400">2.1k calls</span>
+                                    <span>RTP Stream</span>
+                                </div>
+                            </div>
+
+                            <div class="node-card text-center sys-node" id="node-gateway" data-type="compute">
+                                <span class="material-symbols-outlined text-3xl text-blue-400">api</span>
+                                <h4 class="font-bold text-xs mt-2">API Gateway</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Kong Ingress / TLS</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-emerald-400">4.2k RPS</span>
+                                    <span class="text-amber-400">Rate Limiter</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- COLUMN 2: Message Bus & State -->
+                        <div class="layer-box p-6 space-y-8 flex flex-col justify-center border-brand-500/20 bg-brand-500/5">
+                            <h3 class="absolute top-4 left-4 text-[10px] font-mono text-brand-400 uppercase">Async Event Mesh</h3>
+                            
+                            <div class="node-card text-center border-brand-500/40 sys-node" id="node-kafka" data-type="queue">
+                                <span class="node-badge text-brand-400 border-brand-500/30">3 Brokers</span>
+                                <span class="material-symbols-outlined text-3xl text-brand-400">dynamic_feed</span>
+                                <h4 class="font-bold text-xs mt-2">Kafka Event Bus</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Topics: audio.raw, stt.done, llm.gen</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-brand-300">12ms Lag</span>
+                                    <span>240MB/s</span>
+                                </div>
+                            </div>
+
+                            <div class="node-card text-center sys-node" id="node-redis" data-type="cache">
+                                <span class="material-symbols-outlined text-3xl text-red-400">memory</span>
+                                <h4 class="font-bold text-xs mt-2">Redis Session State</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Call Context & Cache</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-emerald-400">Hit: 94%</span>
+                                    <span class="text-slate-400">TTL 1h</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- COLUMN 3: Pipeline Processing -->
+                        <div class="layer-box p-6 space-y-6 flex flex-col justify-center">
+                            <h3 class="absolute top-4 left-4 text-[10px] font-mono text-slate-500 uppercase">Processing Layer</h3>
+                            
+                            <div class="node-card text-center sys-node" id="node-stt" data-type="compute">
+                                <span class="node-badge text-emerald-400 border-emerald-500/30">Autoscaling</span>
+                                <span class="material-symbols-outlined text-3xl text-accent-400">mic</span>
+                                <h4 class="font-bold text-xs mt-2">STT Streaming Workers</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Partial Decoding</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-amber-400">Lat: 340ms</span>
+                                    <span>GPU: 82%</span>
+                                </div>
+                            </div>
+
+                            <div class="node-card text-center sys-node border-amber-500/30" id="node-router" data-type="compute">
+                                <span class="material-symbols-outlined text-3xl text-amber-400">route</span>
+                                <h4 class="font-bold text-xs mt-2">Semantic Router</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Intent & Toxicity Filter</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-red-400">Blocked: 12</span>
+                                    <span>Lat: 45ms</span>
+                                </div>
+                            </div>
+
+                            <div class="node-card text-center sys-node" id="node-tts" data-type="compute">
+                                <span class="material-symbols-outlined text-3xl text-pink-400">record_voice_over</span>
+                                <h4 class="font-bold text-xs mt-2">TTS Streaming Workers</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Incremental audio gen</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-amber-400">TTFB: 210ms</span>
+                                    <span>GPU: 64%</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- COLUMN 4: RAG & Inference Orchestration -->
+                        <div class="layer-box p-6 space-y-6 flex flex-col justify-center border-accent-500/20 bg-accent-500/5">
+                            <h3 class="absolute top-4 left-4 text-[10px] font-mono text-accent-400 uppercase">Intelligence Layer</h3>
+                            
+                            <div class="node-card text-center sys-node" id="node-rag" data-type="compute">
+                                <span class="material-symbols-outlined text-3xl text-accent-400">manage_search</span>
+                                <h4 class="font-bold text-xs mt-2">RAG Orchestrator</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Hybrid Search + Cohere Rerank</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-emerald-400">Lat: 112ms</span>
+                                    <span>Top-K: 5</span>
+                                </div>
+                            </div>
+
+                            <div class="node-card text-center sys-node border-brand-500/50" id="node-llm" data-type="compute">
+                                <span class="node-badge text-warn-400 border-warn-500/30">Degraded (Retry)</span>
+                                <span class="material-symbols-outlined text-3xl text-brand-400">memory</span>
+                                <h4 class="font-bold text-xs mt-2">vLLM Inference Cluster</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Continuous Batching (Streaming)</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-brand-300">8x H100</span>
+                                    <span class="text-amber-400 jitter-val">Lat: 1.8s</span>
+                                </div>
+                            </div>
+
+                            <div class="node-card text-center sys-node border-dashed border-red-500/50 bg-red-500/5" id="node-escalation" data-type="queue">
+                                <span class="material-symbols-outlined text-3xl text-red-400">support_agent</span>
+                                <h4 class="font-bold text-xs mt-2">Human Escalation Queue</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Low-confidence fallback</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-red-400">Depth: 14</span>
+                                    <span class="text-slate-400">Workers: 3</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- COLUMN 5: Storage & Analytics -->
+                        <div class="layer-box p-6 space-y-8 flex flex-col justify-center">
+                            <h3 class="absolute top-4 left-4 text-[10px] font-mono text-slate-500 uppercase">Storage & Ops</h3>
+                            
+                            <div class="node-card text-center sys-node" id="node-pg" data-type="db">
+                                <span class="material-symbols-outlined text-3xl text-blue-400">storage</span>
+                                <h4 class="font-bold text-xs mt-2">PostgreSQL + PgVector</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Embeddings & Users</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-emerald-400">Conn: 412</span>
+                                    <span>24M Vecs</span>
+                                </div>
+                            </div>
+
+                            <div class="node-card text-center sys-node" id="node-cosmos" data-type="db">
+                                <span class="material-symbols-outlined text-3xl text-purple-400">database</span>
+                                <h4 class="font-bold text-xs mt-2">Azure Cosmos DB</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Call Logs & Audits</p>
+                                <div class="mt-2 text-[9px] font-mono flex justify-between bg-black/40 p-1 rounded">
+                                    <span class="text-emerald-400">2.4k RU/s</span>
+                                    <span>NoSQL</span>
+                                </div>
+                            </div>
+
+                            <div class="node-card text-center sys-node" id="node-blob" data-type="db">
+                                <span class="material-symbols-outlined text-3xl text-amber-400">folder_open</span>
+                                <h4 class="font-bold text-xs mt-2">Object Storage</h4>
+                                <p class="text-[9px] text-slate-500 mt-1 font-mono">Audio Recordings (WAV)</p>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- Hover Details overlay -->
+                <div id="node-info" class="absolute top-4 right-4 glass-panel p-4 rounded-lg border-brand-500/30 w-64 opacity-0 transition-opacity pointer-events-none z-50">
+                    <h4 class="font-bold text-xs text-brand-400 mb-1" id="ni-title">Node</h4>
+                    <p class="text-[10px] text-slate-400 font-mono mb-3" id="ni-desc">Desc</p>
+                    <div class="space-y-1.5 font-mono text-[9px]">
+                        <div class="flex justify-between border-b border-white/5 pb-1"><span>Status</span><span id="ni-status" class="text-emerald-400">Active</span></div>
+                        <div class="flex justify-between border-b border-white/5 pb-1"><span>Type</span><span id="ni-type">Compute</span></div>
+                        <div class="flex justify-between border-b border-white/5 pb-1"><span>Trace_ID</span><span class="text-slate-500" id="ni-trace">tr_84920</span></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION 2: STREAMING PIPELINE WATERFALL -->
+        <section>
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-xl font-bold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-accent-400">waterfall_chart</span>
+                        Real-time Streaming Waterfall
+                    </h2>
+                    <p class="text-xs text-slate-400 mt-1">Distributed trace of an active duplex streaming session (trace_id: tr_948f2a1b)</p>
+                </div>
+                <div class="px-3 py-1 bg-black/40 border border-white/10 rounded font-mono text-[10px] flex items-center gap-2">
+                    <span class="material-symbols-outlined text-[12px] text-red-400">radio_button_checked</span> Live Trace
+                </div>
+            </div>
+
+            <div class="glass-panel p-6 rounded-2xl space-y-4 font-mono text-[10px]">
+                <div class="flex">
+                    <div class="w-48 text-slate-400">RTP Audio Ingress (SIP)</div>
+                    <div class="flex-1 bg-slate-900/50 rounded h-5 relative">
+                        <div class="absolute left-0 top-0 h-full bg-slate-600 rounded-l w-[100%] opacity-50"></div>
+                        <div class="absolute left-[2%] -top-3 text-[8px] text-emerald-400">Chunks arriving continuously</div>
+                    </div>
+                </div>
+                <div class="flex">
+                    <div class="w-48 text-slate-400">STT Partial Decode</div>
+                    <div class="flex-1 bg-slate-900/50 rounded h-5 relative border-l border-white/10">
+                        <div class="absolute left-[5%] top-0 h-full bg-brand-500/60 rounded w-[20%]"></div>
+                        <div class="absolute left-[26%] top-0 h-full bg-brand-500/60 rounded w-[15%]"></div>
+                        <div class="absolute left-[42%] top-0 h-full bg-brand-500/60 rounded w-[10%]"></div>
+                    </div>
+                </div>
+                <div class="flex">
+                    <div class="w-48 text-slate-400">Semantic Intent / Cache</div>
+                    <div class="flex-1 bg-slate-900/50 rounded h-5 relative border-l border-white/10">
+                        <div class="absolute left-[55%] top-0 h-full bg-amber-500/60 rounded w-[5%]"></div>
+                    </div>
+                </div>
+                <div class="flex">
+                    <div class="w-48 text-slate-400">RAG Hybrid Search</div>
+                    <div class="flex-1 bg-slate-900/50 rounded h-5 relative border-l border-white/10">
+                        <div class="absolute left-[62%] top-0 h-full bg-accent-500/60 rounded w-[8%]"></div>
+                    </div>
+                </div>
+                <div class="flex">
+                    <div class="w-48 text-slate-400">LLM Token Streaming</div>
+                    <div class="flex-1 bg-slate-900/50 rounded h-5 relative border-l border-white/10">
+                        <div class="absolute left-[72%] top-0 h-full bg-purple-500/60 rounded w-[25%] flex text-[6px] items-center px-1 overflow-hidden">
+                            t...t...t...t...t...t...t
+                        </div>
+                    </div>
+                </div>
+                <div class="flex">
+                    <div class="w-48 text-slate-400">TTS Incremental Gen</div>
+                    <div class="flex-1 bg-slate-900/50 rounded h-5 relative border-l border-white/10">
+                        <div class="absolute left-[76%] top-0 h-full bg-pink-500/60 rounded w-[22%]"></div>
+                    </div>
+                </div>
+                <div class="flex pt-4 border-t border-white/10">
+                    <div class="w-48"></div>
+                    <div class="flex-1 flex justify-between text-slate-500">
+                        <span>0ms</span>
+                        <span>500ms</span>
+                        <span>1.0s</span>
+                        <span>1.5s</span>
+                        <span>2.0s</span>
+                        <span>2.5s</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION 3: SYSTEM METRICS & ARCHITECTURAL GRID -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Guardrails -->
+            <div class="glass-panel p-6 rounded-xl">
+                <h3 class="text-sm font-bold flex items-center gap-2 mb-4">
+                    <span class="material-symbols-outlined text-red-400 text-lg">gpp_maybe</span> Policy Guardrails
+                </h3>
+                <div class="space-y-3 font-mono text-[10px]">
+                    <div class="flex justify-between items-center pb-2 border-b border-white/5">
+                        <span class="text-slate-400">Prompt Injection Filter</span>
+                        <span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">PASS</span>
+                    </div>
+                    <div class="flex justify-between items-center pb-2 border-b border-white/5">
+                        <span class="text-slate-400">Hallucination Detector</span>
+                        <span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">0.02 SCORE</span>
+                    </div>
+                    <div class="flex justify-between items-center pb-2 border-b border-white/5">
+                        <span class="text-slate-400">Toxicity / PII Redaction</span>
+                        <span class="px-1.5 py-0.5 rounded bg-brand-500/20 text-brand-400">ACTIVE</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Databases -->
+            <div class="glass-panel p-6 rounded-xl">
+                <h3 class="text-sm font-bold flex items-center gap-2 mb-4">
+                    <span class="material-symbols-outlined text-blue-400 text-lg">database</span> Storage Tier Health
+                </h3>
+                <div class="space-y-3 font-mono text-[10px]">
+                    <div class="flex justify-between items-center pb-2 border-b border-white/5">
+                        <div>
+                            <p class="text-slate-300">Redis Cluster</p>
+                            <p class="text-slate-500 text-[8px] mt-0.5">Session / Cache</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-emerald-400 jitter-val">1.2ms P99</p>
+                            <p class="text-slate-500 text-[8px] mt-0.5">Master + 2 Reps</p>
+                        </div>
+                    </div>
+                    <div class="flex justify-between items-center pb-2 border-b border-white/5">
+                        <div>
+                            <p class="text-slate-300">Cosmos DB</p>
+                            <p class="text-slate-500 text-[8px] mt-0.5">NoSQL Logs</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-emerald-400">8ms P99</p>
+                            <p class="text-slate-500 text-[8px] mt-0.5">Provisioned 5k RU/s</p>
+                        </div>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <p class="text-slate-300">PgVector</p>
+                            <p class="text-slate-500 text-[8px] mt-0.5">Embeddings</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-emerald-400">45ms P99</p>
+                            <p class="text-slate-500 text-[8px] mt-0.5">Index: HNSW</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Orchestration Failures -->
+            <div class="glass-panel p-6 rounded-xl border-t-2 border-t-amber-500/50">
+                <h3 class="text-sm font-bold flex items-center gap-2 mb-4 text-amber-400">
+                    <span class="material-symbols-outlined text-lg">electric_meter</span> Circuit Breakers
+                </h3>
+                <div class="space-y-3 font-mono text-[10px]">
+                    <div class="p-2 bg-amber-500/10 border border-amber-500/20 rounded">
+                        <div class="flex justify-between text-amber-400 mb-1">
+                            <span>vLLM Inference (Primary)</span>
+                            <span>DEGRADED</span>
+                        </div>
+                        <p class="text-slate-400 text-[8px]">Latency > 3s. Routing 20% traffic to Fallback Pool B.</p>
+                    </div>
+                    <div class="p-2 bg-slate-900 border border-white/5 rounded">
+                        <div class="flex justify-between text-slate-300 mb-1">
+                            <span>Bhashini STT Gateway</span>
+                            <span class="text-emerald-400">CLOSED</span>
+                        </div>
+                        <p class="text-slate-500 text-[8px]">Operating normally. Error rate < 0.1%</p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Client-side Logic -->
+    <script>
+        // 1. Terminal Event Stream Logic
+        const streamContainer = document.getElementById('event-stream');
+        const events = [
+            { type: 'info', msg: 'SIP: New WebRTC transport established (session_id: s_984f)' },
+            { type: 'perf', msg: 'Kafka: Produced to topic [audio.raw] (offset: 8492021)' },
+            { type: 'perf', msg: 'Worker: STT partial decode chunk (140ms)' },
+            { type: 'warn', msg: 'Router: Intent confidence low (0.42). Soft fallback.' },
+            { type: 'rag', msg: 'Redis: Cache MISS for semantic vector' },
+            { type: 'rag', msg: 'PgVector: Hybrid search returned 4 chunks (Latency: 82ms)' },
+            { type: 'rag', msg: 'Cohere: Reranking applied. Top chunk score: 0.92' },
+            { type: 'llm', msg: 'vLLM: Continuous batching appended (batch_size: 14)' },
+            { type: 'llm', msg: 'vLLM: Token stream chunk yielded (ttft: 450ms)' },
+            { type: 'sec', msg: 'Guardrails: Response cleared toxic/PII filter' },
+            { type: 'perf', msg: 'TTS: Synthesizer chunk generated (Latency: 110ms)' },
+            { type: 'err', msg: 'Circuit Breaker: Inference timeout > 2s. Incrementing err_cnt.' },
+            { type: 'info', msg: 'DB: Async write to CosmosDB (call_logs) queued.' },
+        ];
+
+        function addTerminalEvent() {
+            const event = events[Math.floor(Math.random() * events.length)];
+            const div = document.createElement('div');
+            
+            let color = 'text-slate-400';
+            if(event.type === 'perf') color = 'text-brand-400';
+            if(event.type === 'rag') color = 'text-accent-400';
+            if(event.type === 'warn') color = 'text-amber-400';
+            if(event.type === 'err') color = 'text-red-400';
+            if(event.type === 'sec') color = 'text-emerald-400';
+
+            const time = new Date().toISOString().split('T')[1].substring(0,12);
+            div.innerHTML = `<span class="text-slate-600 mr-2">[${time}]</span><span class="${color} terminal-text">${event.msg}</span>`;
+            
+            streamContainer.appendChild(div);
+            if(streamContainer.children.length > 25) {
+                streamContainer.removeChild(streamContainer.children[0]);
+            }
+            streamContainer.scrollTop = streamContainer.scrollHeight;
+            setTimeout(addTerminalEvent, Math.random() * 800 + 200);
+        }
+        setTimeout(addTerminalEvent, 500);
+
+        // 2. Jittering Metrics Logic
+        setInterval(() => {
+            document.getElementById('global-rps').textContent = (4200 + Math.floor(Math.random() * 100 - 50)).toLocaleString();
+            document.getElementById('global-lat').textContent = (2.4 + Math.random() * 0.2 - 0.1).toFixed(2) + 's';
+            document.getElementById('global-lag').textContent = (12 + Math.floor(Math.random() * 5)).toString() + 'ms';
+        }, 1000);
+
+        // 3. Topology Interactivity & Connector Drawing
+        const pz = Panzoom(document.getElementById('topology-canvas'), {
+            maxScale: 1.5,
+            minScale: 0.4,
+            step: 0.1,
+            cursor: 'grab'
+        });
+
+        // Draw connections
+        const connections = [
+            { from: 'node-telecom', to: 'node-gateway', color: 'rgba(99, 102, 241, 0.5)' },
+            { from: 'node-gateway', to: 'node-kafka', color: 'rgba(255, 255, 255, 0.2)' },
+            { from: 'node-kafka', to: 'node-stt', color: 'rgba(45, 212, 191, 0.5)' },
+            { from: 'node-stt', to: 'node-router', color: 'rgba(45, 212, 191, 0.5)' },
+            { from: 'node-router', to: 'node-redis', color: 'rgba(255, 255, 255, 0.2)' },
+            { from: 'node-router', to: 'node-rag', color: 'rgba(45, 212, 191, 0.5)' },
+            { from: 'node-rag', to: 'node-llm', color: 'rgba(99, 102, 241, 0.5)' },
+            { from: 'node-llm', to: 'node-tts', color: 'rgba(99, 102, 241, 0.5)' },
+            { from: 'node-tts', to: 'node-kafka', color: 'rgba(255, 255, 255, 0.2)' },
+            { from: 'node-router', to: 'node-escalation', color: 'rgba(239, 68, 68, 0.5)' },
+            { from: 'node-rag', to: 'node-pg', color: 'rgba(56, 189, 248, 0.5)' },
+            { from: 'node-kafka', to: 'node-cosmos', color: 'rgba(168, 85, 247, 0.5)' }
+        ];
+
+        function drawConnectors() {
+            const svg = document.getElementById('svg-layer');
+            const canvasRect = document.getElementById('topology-canvas').getBoundingClientRect();
+            // Clear existing paths
+            svg.querySelectorAll('path').forEach(p => p.remove());
+
+            connections.forEach(conn => {
+                const f = document.getElementById(conn.from);
+                const t = document.getElementById(conn.to);
+                if(!f || !t) return;
+
+                const fRect = f.getBoundingClientRect();
+                const tRect = t.getBoundingClientRect();
+
+                // Coordinates relative to canvas
+                const startX = (fRect.left + fRect.width) - canvasRect.left;
+                const startY = (fRect.top + fRect.height/2) - canvasRect.top;
+                const endX = tRect.left - canvasRect.left;
+                const endY = (tRect.top + tRect.height/2) - canvasRect.top;
+
+                // Bezier curve
+                const cpX = (startX + endX) / 2;
+                
+                const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                path.setAttribute("d", `M ${startX} ${startY} C ${cpX} ${startY}, ${cpX} ${endY}, ${endX} ${endY}`);
+                path.setAttribute("stroke", conn.color);
+                path.setAttribute("stroke-width", "2");
+                path.setAttribute("fill", "none");
+                path.setAttribute("class", "anim-dash");
+                path.setAttribute("marker-end", "url(#arrow)");
+                
+                svg.appendChild(path);
+            });
+        }
+
+        // Delay initial draw slightly to ensure DOM layout is complete
+        setTimeout(drawConnectors, 100);
+        window.addEventListener('resize', drawConnectors);
+        document.getElementById('topology-canvas').addEventListener('panzoomchange', drawConnectors);
+
+        // 4. Node Hover Info Overlay
+        const infoPanel = document.getElementById('node-info');
+        document.querySelectorAll('.sys-node').forEach(node => {
+            node.addEventListener('mouseenter', () => {
+                const type = node.getAttribute('data-type');
+                const title = node.querySelector('h4').textContent;
+                const desc = node.querySelector('p').textContent;
+                
+                document.getElementById('ni-title').textContent = title;
+                document.getElementById('ni-desc').textContent = desc;
+                document.getElementById('ni-type').textContent = type.toUpperCase();
+                document.getElementById('ni-trace').textContent = 'tr_' + Math.floor(Math.random()*90000+10000);
+                
+                infoPanel.classList.remove('opacity-0');
+            });
+            node.addEventListener('mouseleave', () => {
+                infoPanel.classList.add('opacity-0');
+            });
+        });
+
+    </script>
+</body>
+</html>
