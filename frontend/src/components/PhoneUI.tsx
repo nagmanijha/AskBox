@@ -1,11 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 
-export default function PhoneUI() {
+export default function PhoneUI({ autoStartMode }: { autoStartMode?: 'form' | 'standard' }) {
     const [status, setStatus] = useState<'idle' | 'connecting' | 'listening' | 'speaking' | 'error'>('idle');
     const [aiText, setAiText] = useState('');
     const [textInput, setTextInput] = useState('');
     const [language, setLanguage] = useState<'en-IN' | 'hi-IN' | 'te-IN' | 'mr-IN'>('en-IN');
+    const [isFormMode, setIsFormMode] = useState(false);
+    const [formData, setFormData] = useState<Record<string, string>>({
+        name: '', age: '', gender: '', location: '', occupation: ''
+    });
+    const [showModeSelection, setShowModeSelection] = useState(false);
 
     const wsRef = useRef<WebSocket | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
@@ -15,10 +20,13 @@ export default function PhoneUI() {
     // Playback queue reference to ensure smooth contiguous audio
     const nextPlayTimeRef = useRef<number>(0);
 
-    const startCall = async () => {
+    const startCall = async (mode: boolean = false) => {
         if (wsRef.current) return;
         setStatus('connecting');
         setAiText('');
+        setIsFormMode(mode);
+        setShowModeSelection(false);
+        setFormData({ name: '', age: '', gender: '', location: '', occupation: '' });
         nextPlayTimeRef.current = 0;
 
         try {
@@ -28,7 +36,8 @@ export default function PhoneUI() {
             mediaStreamRef.current = stream;
 
             const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsHost = import.meta.env.VITE_WS_URL || 'localhost:3001';
+            // Use current host to hit the Vite proxy, allowing it to work on IP/Tunnels
+            const wsHost = import.meta.env.VITE_WS_URL || window.location.host;
             const url = `${proto}//${wsHost}/acs-audio?callId=demo-phone-ui-${Date.now()}&lang=${language}`;
             
             const ws = new WebSocket(url);
@@ -40,6 +49,10 @@ export default function PhoneUI() {
                 const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
                 audioContextRef.current = audioCtx;
                 nextPlayTimeRef.current = audioCtx.currentTime;
+
+                if (isFormMode) {
+                    ws.send(JSON.stringify({ kind: 'SetFormMode', enabled: true }));
+                }
 
                 const source = audioCtx.createMediaStreamSource(stream);
                 const processor = audioCtx.createScriptProcessor(4096, 1, 1);
@@ -75,7 +88,12 @@ export default function PhoneUI() {
                         setStatus('speaking');
                         playAudioChunk(msg.audioData.data);
                     } else if (msg.kind === 'TextResponse') {
-                        setAiText(msg.text);
+                        if (msg.text.startsWith('FORM_UPDATE:')) {
+                            const data = JSON.parse(msg.text.replace('FORM_UPDATE:', ''));
+                            setFormData(data);
+                        } else {
+                            setAiText(msg.text);
+                        }
                     }
                 } catch (err) {
                     console.error('WebSocket receive error', err);
@@ -90,6 +108,15 @@ export default function PhoneUI() {
             stopCall('error');
         }
     };
+
+    // Auto-start logic when navigating from "Voice Apply"
+    useEffect(() => {
+        if (autoStartMode === 'form' && status === 'idle' && !wsRef.current) {
+            setTimeout(() => {
+                startCall(true); // Automatically jump to form mode
+            }, 300); // Tiny delay to allow animation transition to PhoneUI before requesting mic
+        }
+    }, [autoStartMode]);
 
     const playAudioChunk = (base64Data: string) => {
         const audioCtx = audioContextRef.current;
@@ -152,6 +179,8 @@ export default function PhoneUI() {
             wsRef.current = null;
         }
         setStatus(finalStatus);
+        setIsFormMode(false);
+        setFormData({ name: '', age: '', gender: '', location: '', occupation: '' });
     };
 
     const handleTextSubmit = (e: React.FormEvent) => {
@@ -253,9 +282,27 @@ export default function PhoneUI() {
                         {/* AI Subtitle Captions */}
                         <div className="h-24 w-full flex items-center justify-center">
                             <p className="text-base text-slate-300 italic px-2 transition-all line-clamp-3">
-                                {aiText ? `"${aiText}"` : (status === 'listening' && 'Speak your question...')}
+                                {aiText ? `"${aiText}"` : (status === 'listening' && (isFormMode ? 'Fill in your details...' : 'Speak your question...'))}
                             </p>
                         </div>
+
+                        {/* Form Progress Display */}
+                        {isFormMode && status !== 'idle' && (
+                            <div className="w-full mt-4 space-y-2 bg-white/5 p-4 rounded-2xl border border-white/10 animate-in fade-in slide-in-from-bottom-4">
+                                <p className="text-[10px] font-bold text-primary uppercase tracking-widest mb-2 text-left">Registration Form</p>
+                                {Object.entries(formData).map(([key, value]) => (
+                                    <div key={key} className="flex items-center justify-between">
+                                        <span className="text-[10px] text-slate-400 uppercase">{key}</span>
+                                        <div className="flex items-center gap-2">
+                                            <span className={`text-xs font-bold ${value ? 'text-accent-teal' : 'text-slate-600 italic'}`}>
+                                                {value || 'pending'}
+                                            </span>
+                                            {value && <span className="material-symbols-outlined text-accent-teal text-xs">check_circle</span>}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     {/* Bottom Controls */}
@@ -264,7 +311,7 @@ export default function PhoneUI() {
                         {/* Action Switcher */}
                         {status === 'idle' || status === 'error' ? (
                             <button 
-                                onClick={startCall}
+                                onClick={() => setShowModeSelection(true)}
                                 className="w-16 h-16 rounded-full bg-green-500 flex items-center justify-center text-white mx-auto shadow-[0_0_30px_rgba(34,197,94,0.4)] hover:scale-110 transition-transform"
                             >
                                 <span className="material-symbols-outlined text-3xl">call</span>
@@ -296,6 +343,50 @@ export default function PhoneUI() {
                     </div>
 
                 </div>
+
+                {/* Mode Selection Overlay */}
+                {showModeSelection && (
+                    <div className="absolute inset-0 z-30 bg-black/90 flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-300">
+                        <div className="w-16 h-1 bg-white/20 rounded-full mb-8"></div>
+                        <h3 className="text-xl font-bold text-white mb-2">Select Call Mode</h3>
+                        <p className="text-sm text-slate-400 mb-8 px-4">Choose how you'd like to interact with the AI assistant today.</p>
+                        
+                        <div className="w-full space-y-4">
+                            <button 
+                                onClick={() => startCall(false)}
+                                className="w-full p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all flex items-center gap-4 group"
+                            >
+                                <div className="size-10 rounded-xl bg-primary/20 flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-background-dark transition-colors">
+                                    <span className="material-symbols-outlined">chat</span>
+                                </div>
+                                <div className="text-left">
+                                    <p className="text-sm font-bold text-white">Standard Query</p>
+                                    <p className="text-[10px] text-slate-500">Ask any question or get advice.</p>
+                                </div>
+                            </button>
+
+                            <button 
+                                onClick={() => startCall(true)}
+                                className="w-full p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all flex items-center gap-4 group"
+                            >
+                                <div className="size-10 rounded-xl bg-accent-teal/20 flex items-center justify-center text-accent-teal group-hover:bg-accent-teal group-hover:text-background-dark transition-colors">
+                                    <span className="material-symbols-outlined">assignment</span>
+                                </div>
+                                <div className="text-left">
+                                    <p className="text-sm font-bold text-white">Form Filling</p>
+                                    <p className="text-[10px] text-slate-500">Register details for programs.</p>
+                                </div>
+                            </button>
+
+                            <button 
+                                onClick={() => setShowModeSelection(false)}
+                                className="w-full py-4 text-xs font-bold text-slate-500 hover:text-white transition-colors"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Admin & Portal Links Layer */}

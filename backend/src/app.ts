@@ -24,6 +24,7 @@ import callsRoutes from './modules/calls/calls.routes';
 import knowledgeRoutes from './modules/knowledge/knowledge.routes';
 import analyticsRoutes from './modules/analytics/analytics.routes';
 import settingsRoutes from './modules/settings/settings.routes';
+import chatRoutes from './modules/chat/chat.routes';
 
 const app = express();
 const server = createServer(app);
@@ -59,6 +60,7 @@ app.use('/api/calls', callsRoutes);
 app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/chat', chatRoutes);
 
 // Ensure public directories exist
 const summariesDir = path.join(process.cwd(), 'public', 'summaries');

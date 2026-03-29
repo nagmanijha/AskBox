@@ -1,4 +1,3 @@
-
 import { pool } from './connection';
 import { logger } from '../config/logger';
 
@@ -109,4 +108,3 @@ runMigrations()
         logger.error('Migration script failed', { error: err });
         process.exit(1);
     });
-

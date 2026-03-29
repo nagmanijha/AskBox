@@ -28,7 +28,6 @@ export interface User {
 export interface JwtPayload {
     userId: string;
     email: string;
-    role?: string;
 }
 
 /** Call log from Cosmos DB */

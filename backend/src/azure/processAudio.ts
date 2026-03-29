@@ -1,4 +1,3 @@
-
 import { WebSocket } from 'ws';
 import { logger } from '../config/logger';
 import * as fs from 'fs';
@@ -7,8 +6,7 @@ import { wrapPcmToWav } from './wavHelper';
 import { v4 as uuidv4 } from 'uuid';
 
 // ── Service Imports ──
-import { CallSession } from './callSession';
-import { ConversationTurn } from '../shared/types';
+import { CallSession, ConversationTurn } from './callSession';
 import { redisService } from './redisClient';
 import { sttService, STTController, STTResult } from './sttService';
 import { ragService } from './ragService';
@@ -63,7 +61,7 @@ export class AudioPipeline {
 
         // Extract explicit language preference if provided
         const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-        const langParam = urlObj.searchParams.get('lang') || urlObj.searchParams.get('language');
+        const langParam = urlObj.searchParams.get('lang');
         if (langParam) {
             session.setLanguage(langParam, true);
         }
@@ -102,15 +100,12 @@ export class AudioPipeline {
                         const pcmBuffer = Buffer.from(payload.audioData.data, 'base64');
                         session.pushAudio(pcmBuffer);
                         sttController.pushAudio(pcmBuffer);
-                    } else if (payload.kind === 'Transcript' && payload.text) {
-                        // Browser STT transcript — frontend sends recognized speech as text
-                        const lang = payload.language || session.language;
-                        logger.info(`[Pipeline:${callId}] Browser transcript marker: "${payload.text}"`);
-                        if (payload.language) {
-                            session.setLanguage(payload.language, true);
+                    } else if (payload.kind === 'SetFormMode') {
+                        logger.info(`[Pipeline:${session.sessionId}] 📝 Form Mode: ${payload.enabled}`);
+                        session.formMode = payload.enabled;
+                        if (session.formMode) {
+                            this.executeFormInitialization(session);
                         }
-                        session.addTurn('user', payload.text);
-                        this.executeAIWorkflow(session, payload.text);
                     } else if (payload.kind === 'TextData' && payload.text) {
                         logger.info(`[Pipeline:${session.sessionId}] 💬 UI Text Input bypass: "${payload.text}"`);
                         session.addTurn('user', payload.text);
@@ -250,16 +245,65 @@ export class AudioPipeline {
             // ── PHASE 2 — CHECKPOINT 4 & 5: RAG Retrieval + Prompt Assembly ──
             const ragStartTime = Date.now();
 
-            const { messages, context, retrievalSource, retrievalLatencyMs } =
+            const { messages: baseMessages, context, retrievalSource, retrievalLatencyMs: retrievalLatency } =
                 await ragService.retrieveAndAssemble(
                     userQuery,
                     session.language,
                     session.conversationHistory.slice(0, -1) // exclude current turn
                 );
 
-            ragLatencyMs = retrievalLatencyMs;
+            ragLatencyMs = retrievalLatency;
             ragSource = retrievalSource;
             sttLatencyMs = ragStartTime - turnStartTime;
+
+            let messages = baseMessages;
+
+            // ── NEW: Form Pre-processing (Instant Extraction) ──
+            if (session.formMode) {
+                try {
+                    const extracted = await this.extractFormDataFromUtterance(userQuery, session);
+                    if (extracted && Object.keys(extracted).length > 0) {
+                        session.formData = { ...session.formData, ...extracted };
+                        session.sendText(`FORM_UPDATE:${JSON.stringify(session.formData)}`);
+                        logger.info(`[Pipeline:${session.sessionId}] 📥 Pre-extracted form data: ${JSON.stringify(extracted)}`);
+                    }
+                } catch (err) {
+                    logger.error(`[Pipeline:${session.sessionId}] Form extraction error`, err);
+                }
+            }
+
+            // Specialized Form Filling Logic
+            if (session.formMode) {
+                const missingFields = Object.entries(session.formData)
+                    .filter(([_, val]) => !val)
+                    .map(([key, _]) => key);
+
+                const formStatusDescription = Object.entries(session.formData)
+                    .map(([key, val]) => `- ${key}: ${val || 'MISSING'}`)
+                    .join('\n');
+
+                const formPrompt = `
+You are a STRICTOR FORM FILLER agent. Your ONLY job is to complete the 5-field registration form for the user.
+DO NOT answer general questions. DO NOT provide advice. ONLY collect the missing data.
+
+Fields to collect: Name, Age, Gender, Location, Occupation.
+
+CURRENT FORM STATUS:
+${formStatusDescription}
+
+SPECIFIC RULES:
+1. If there are missing fields, ask the user to provide ALL of them at once (List: [${missingFields.join(', ')}]).
+2. If the user provides partial data, acknowledge it and ask for the remaining missing fields.
+3. Keep your responses short and focused on completing the form.
+4. Once ALL fields are filled, say: "Thank you, your registration is now complete. Have a nice day!"
+5. ALWAYS append the update tag <FORM_STATE>{"field": "value", ...}</FORM_STATE> with the full current state at the end.
+6. Speak in ${session.language}.
+`;
+                messages = [
+                    { role: 'system', content: formPrompt },
+                    ...baseMessages.filter(m => m.role !== 'system') // Remove RAG system prompt entirely
+                ];
+            }
 
             // Track schemes accessed for telemetry
             if (context.toLowerCase().includes('pradhan mantri') ||
@@ -378,6 +422,30 @@ export class AudioPipeline {
                 telemetryService.logError(session, error, 'executeAIWorkflow');
             }
         } finally {
+            // Post-processing to extract form state if it was returned by LLM
+            if (session.formMode && assistantResponse.includes('<FORM_STATE>')) {
+                try {
+                    const match = assistantResponse.match(/<FORM_STATE>(.*?)<\/FORM_STATE>/s);
+                    if (match && match[1]) {
+                        const newState = JSON.parse(match[1]);
+                        session.formData = { ...session.formData, ...newState };
+                        
+                        // Clean up assistant response for the user (don't show them the JSON tag)
+                        const cleanedResponse = assistantResponse.replace(/<FORM_STATE>.*?<\/FORM_STATE>/s, '').trim();
+                        // Note: assistantResponse is updated locally here, but the historical turn was already added.
+                        // We might need to update the history too if we want it to be clean.
+                        const lastTurn = session.conversationHistory[session.conversationHistory.length - 1];
+                        if (lastTurn && lastTurn.role === 'assistant') {
+                            lastTurn.content = cleanedResponse;
+                        }
+                        
+                        // Let the frontend know the updated form status
+                        session.sendText(`FORM_UPDATE:${JSON.stringify(session.formData)}`);
+                    }
+                } catch (err) {
+                    logger.error(`[Pipeline] Failed to parse form state:`, err);
+                }
+            }
             session.endTurn();
         }
     }
@@ -414,8 +482,14 @@ export class AudioPipeline {
 
         // Trigger LLM to summarize the entire conversation in the background (non-blocking)
         if (session.conversationHistory.length >= 2) {
-            this.generateSummary(callId, session.conversationHistory).catch(err => {
+            this.generateSummary(callId, session).catch(err => {
                 logger.error(`[Pipeline] Failed to generate call summary:`, err);
+            });
+        }
+
+        if (session.formMode) {
+            this.generateFormFile(callId, session).catch(err => {
+                logger.error(`[Pipeline] Failed to generate form file:`, err);
             });
         }
 
@@ -432,10 +506,10 @@ export class AudioPipeline {
      * Non-blocking background task to generate a text summary of the call
      * and save it to the public backend output directory for the User Portal.
      */
-    private async generateSummary(callId: string, history: ConversationTurn[]): Promise<void> {
+    private async generateSummary(callId: string, session: CallSession): Promise<void> {
         logger.info(`[Pipeline] Generating summary for call ${callId}...`);
         
-        let transcript = history.map(t => `${t.role.toUpperCase()}: ${t.content}`).join('\n\n');
+        let transcript = session.conversationHistory.map(t => `${t.role.toUpperCase()}: ${t.content}`).join('\n\n');
         let prompt = `Analyze the following telephone conversation transcript and provide a concise, readable summary. Include the caller's main intent and the final resolution.\n\nTranscript:\n${transcript}`;
         
         try {
@@ -446,17 +520,108 @@ export class AudioPipeline {
             const outputDir = path.join(process.cwd(), 'public', 'summaries');
             if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-            const filename = `summary_${callId}_${Date.now()}.txt`;
+            const filename = `summary_${callId}.txt`;
             const filepath = path.join(outputDir, filename);
 
             // Format for readability
-            const fileContent = `Call ID: ${callId}\nTime: ${new Date().toLocaleString()}\nTurns: ${history.length}\n\n=== CALL SUMMARY ===\n${summaryText.trim()}\n\n=== VERBATIM TRANSCRIPT ===\n${transcript}`;
+            const fileContent = `Call ID: ${callId}\nTime: ${new Date().toLocaleString()}\nTurns: ${session.metrics.totalTurns}\n\n=== CALL SUMMARY ===\n${summaryText.trim()}\n\n=== VERBATIM TRANSCRIPT ===\n${transcript}`;
             
             fs.writeFileSync(filepath, fileContent);
             logger.info(`[Pipeline] ✅ Call summary successfully saved to ${filepath}`);
         } catch (err) {
             logger.error(`[Pipeline] Failed to generate summary:`, err);
         }
+    }
+
+    /**
+     * Save the collected form data as a separate text file.
+     */
+    private async generateFormFile(callId: string, session: CallSession): Promise<void> {
+        logger.info(`[Pipeline] Generating form file for call ${callId}...`);
+        
+        try {
+            const outputDir = path.join(process.cwd(), 'public', 'summaries');
+            if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+
+            const filename = `form_${callId}.txt`;
+            const filepath = path.join(outputDir, filename);
+
+            const formContent = `
+========================================
+    AI FORM SUBMISSION - ASKBOX
+========================================
+Call ID: ${callId}
+Date: ${new Date().toLocaleString()}
+Phone: ${session.callerPhoneNumber}
+
+COLLECTED FIELDS:
+-----------------
+Full Name: ${session.formData.name || 'NOT PROVIDED'}
+Age:       ${session.formData.age || 'NOT PROVIDED'}
+Gender:    ${session.formData.gender || 'NOT PROVIDED'}
+Location:  ${session.formData.location || 'NOT PROVIDED'}
+Occupation: ${session.formData.occupation || 'NOT PROVIDED'}
+
+Verification Status: ${Object.values(session.formData).every(v => !!v) ? 'COMPLETE' : 'INCOMPLETE'}
+========================================
+`;
+            
+            fs.writeFileSync(filepath, formContent);
+            logger.info(`[Pipeline] ✅ Form file successfully saved to ${filepath}`);
+        } catch (err) {
+            logger.error(`[Pipeline] Failed to generate form file:`, err);
+        }
+    }
+
+    /**
+     * Specialized LLM call to extract known fields from a user utterance.
+     * This runs before the main AI response to update the UI instantly.
+     */
+    private async extractFormDataFromUtterance(text: string, session: CallSession): Promise<Record<string, string> | null> {
+        const prompt = `
+Extract form fields from the user's text. 
+Fields: name, age, gender, location, occupation.
+Return ONLY a valid JSON object with the found fields. If none found, return {}.
+Current context: User is speaking in a phone call (possibly in Hindi, Telugu, or Marathi). 
+Convert non-English values to English for the final JSON.
+
+User text: "${text}"
+JSON:`;
+
+        try {
+            const response = await llmService.generateCompletion({
+                messages: [{ role: 'system', content: prompt }],
+                maxTokens: 100,
+                temperature: 0
+            });
+            const match = response.match(/\{.*\}/s);
+            if (match) {
+                const data = JSON.parse(match[0]);
+                // Clean up data to ensure keys match
+                const cleaned: Record<string, string> = {};
+                for (const k of ['name', 'age', 'gender', 'location', 'occupation']) {
+                    if (data[k]) cleaned[k] = String(data[k]);
+                }
+                return cleaned;
+            }
+        } catch (err) {
+            logger.error(`[Pipeline] Extraction failed`, err);
+        }
+        return null;
+    }
+
+    /**
+     * Initial greeting when entering form mode manually.
+     */
+    private async executeFormInitialization(session: CallSession): Promise<void> {
+        const greeting = session.language === 'en-IN' ? 
+            "I'm now in form mode. Please provide your full name, age, gender, location, and occupation to complete your registration." :
+            "मैं अब फॉर्म मोड में हूँ। कृपया अपना पूरा नाम, आयु, लिंग, स्थान और व्यवसाय बताएं ताकि आपका पंजीकरण पूरा हो सके।";
+        
+        session.addTurn('assistant', greeting);
+        const audioBuffer = await ttsService.synthesize(greeting, session.language);
+        session.sendText(greeting);
+        session.sendAudio(audioBuffer);
     }
 
     /**
@@ -507,4 +672,3 @@ export class AudioPipeline {
 }
 
 export const audioPipeline = new AudioPipeline();
-

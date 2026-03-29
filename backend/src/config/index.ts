@@ -44,7 +44,7 @@ export const config = {
 
     // Azure OpenAI
     openai: {
-        key: process.env.AZURE_OPENAI_API_KEY || process.env.AZURE_OPENAI_KEY || '',
+        key: process.env.AZURE_OPENAI_KEY || '',
         endpoint: process.env.AZURE_OPENAI_ENDPOINT || '',
         deployment: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o',
     },

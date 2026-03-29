@@ -1,4 +1,3 @@
-
 import { logger } from '../config/logger';
 import { config } from '../config';
 
@@ -19,7 +18,7 @@ import { config } from '../config';
  */
 
 export interface LLMStreamOptions {
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: any }>;
     signal?: AbortSignal;
     temperature?: number;
     maxTokens?: number;
@@ -27,19 +26,34 @@ export interface LLMStreamOptions {
 
 /** Convert our internal message format to Gemini's "contents" format */
 function toGeminiContents(
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: any }>
 ): { systemInstruction?: string; contents: Array<{ role: string; parts: Array<{ text: string }> }> } {
     // Gemini separates the system prompt from the conversation turns
     const systemMsg = messages.find((m) => m.role === 'system');
     const turns = messages.filter((m) => m.role !== 'system');
 
-    const contents = turns.map((m) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-    }));
+    const contents = turns.map((m) => {
+        let textContent = '';
+        if (Array.isArray(m.content)) {
+            textContent = m.content.find((c: any) => c.type === 'text')?.text || '';
+        } else {
+            textContent = m.content;
+        }
+        return {
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: textContent }],
+        };
+    });
+
+    let sysTextContent = '';
+    if (systemMsg && Array.isArray(systemMsg.content)) {
+        sysTextContent = systemMsg.content.find((c: any) => c.type === 'text')?.text || '';
+    } else if (systemMsg) {
+        sysTextContent = systemMsg.content;
+    }
 
     return {
-        systemInstruction: systemMsg?.content,
+        systemInstruction: sysTextContent || undefined,
         contents,
     };
 }
@@ -268,11 +282,18 @@ class LLMService {
      * to simulate Gemini token generation timing (~40ms per token).
      */
     private async *mockStream(
-        messages: Array<{ role: string; content: string }>,
+        messages: Array<{ role: string; content: any }>,
         signal?: AbortSignal
     ): AsyncGenerator<string, void, undefined> {
-        const userMessage = messages[messages.length - 1]?.content || '';
-        const lower = userMessage.toLowerCase();
+        let contentObj = messages[messages.length - 1]?.content || '';
+        let userMessage = '';
+        if (Array.isArray(contentObj)) {
+            userMessage = contentObj.find((c: any) => c.type === 'text')?.text || '';
+        } else {
+            userMessage = contentObj;
+        }
+
+        const lower = String(userMessage).toLowerCase();
 
         let response: string;
 
@@ -303,4 +324,3 @@ class LLMService {
 }
 
 export const llmService = new LLMService();
-

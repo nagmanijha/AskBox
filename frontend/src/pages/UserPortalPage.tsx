@@ -90,7 +90,9 @@ export default function UserPortalPage() {
                                                 : 'bg-white/5 border-white/5 hover:bg-white/10'
                                         }`}
                                     >
-                                        <div className="font-medium text-white truncate">Call Summary</div>
+                                        <div className="font-medium text-white truncate">
+                                            {file.filename.startsWith('form_') ? 'Form Submission' : 'Call Summary'}
+                                        </div>
                                         <div className="text-xs text-gray-400 mt-1">
                                             {new Date(file.createdAt).toLocaleString()}
                                         </div>
